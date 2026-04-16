@@ -38,6 +38,13 @@
             "backgroundColor": "#000000"
           }
         }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow SnapDish to access your photos to analyze food images.",
+          "cameraPermission": "Allow SnapDish to use the camera to photograph your food."
+        }
       ]
     ],
     "experiments": {

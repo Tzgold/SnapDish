@@ -1,9 +1,13 @@
-import { FontAwesome6, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
+import * as ImagePicker from 'expo-image-picker';
+import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   FlatList,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -14,11 +18,9 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
-
-type ChoiceItem = {
-  label: string;
-  icon: React.ReactNode;
-};
+import { colors, radius, shadow } from '@/src/theme/snapdish';
+import { analyzeRecipe } from '@/src/services/analyze';
+import type { AnalyzeRecipeRequest } from '@/src/types/recipe';
 
 type TrendingRecipe = {
   id: string;
@@ -27,19 +29,26 @@ type TrendingRecipe = {
   time: string;
 };
 
-export default function HomeScreen() {
-  const { width } = useWindowDimensions();
-  const [linkInput, setLinkInput] = useState('');
-  const [selectedChoice, setSelectedChoice] = useState('Shorts');
-  const [statusMessage, setStatusMessage] = useState('Paste a link or choose an image option to continue.');
+type PickedImage = {
+  base64: string;
+  mimeType: string;
+};
 
-  const choices: ChoiceItem[] = [
-    { label: 'Shorts', icon: <FontAwesome6 name="youtube" size={20} color="#FF0033" /> },
-    { label: 'TikTok', icon: <FontAwesome6 name="tiktok" size={20} color="#111827" /> },
-    { label: 'Reels', icon: <FontAwesome6 name="instagram" size={20} color="#E1306C" /> },
-    { label: 'Upload Img', icon: <Ionicons name="image-outline" size={20} color="#2563EB" /> },
-    { label: 'Take Photo', icon: <Ionicons name="camera-outline" size={20} color="#2563EB" /> },
-  ];
+const SUGGESTIONS = ['Chicken tikka masala', 'Banana bread', 'Greek salad', 'Beef tacos'];
+
+export default function HomeScreen() {
+  const router = useRouter();
+  const { width } = useWindowDimensions();
+  const [dishName, setDishName] = useState('');
+  const [pendingImage, setPendingImage] = useState<PickedImage | null>(null);
+  const [statusMessage, setStatusMessage] = useState(
+    'Type a dish or add a photo — we’ll build a full recipe for you.'
+  );
+  const [busy, setBusy] = useState(false);
+  const [analysisLabel, setAnalysisLabel] = useState('');
+
+  const horizontalPadding = width < 360 ? 16 : 22;
+  const cardWidth = Math.min(260, Math.max(200, width * 0.58));
 
   const trendingRecipes: TrendingRecipe[] = [
     {
@@ -72,37 +81,102 @@ export default function HomeScreen() {
     },
   ];
 
-  const isLinkChoice = selectedChoice === 'Shorts' || selectedChoice === 'TikTok' || selectedChoice === 'Reels';
-  const isGenerateDisabled = isLinkChoice && linkInput.trim().length === 0;
-  const horizontalPadding = width < 360 ? 14 : 20;
-  const choiceGap = 10;
-  const choiceColumns = width < 360 ? 2 : 3;
-  const contentWidth = width - horizontalPadding * 2;
-  const choiceCardWidth = (contentWidth - choiceGap * (choiceColumns - 1)) / choiceColumns;
-  const cardWidth = Math.min(260, Math.max(210, width * 0.62));
-  const headingFontSize = width < 360 ? 30 : width < 420 ? 34 : 38;
-  const headingLineHeight = headingFontSize + 4;
+  const canSubmit = dishName.trim().length > 0 || pendingImage !== null;
+  const isGenerateDisabled = busy || !canSubmit;
 
-  const handleGenerate = () => {
-    if (selectedChoice === 'Upload Img') {
-      setStatusMessage('Upload flow selected. Next we will open image picker and analyze the selected photo.');
-      Alert.alert('Upload Image', 'Image picker will be connected next.');
+  const pickFromGallery = async () => {
+    if (Platform.OS === 'web') {
+      Alert.alert('Phone only', 'Open SnapDish in Expo Go on your phone to use photos.');
       return;
     }
-
-    if (selectedChoice === 'Take Photo') {
-      setStatusMessage('Camera flow selected. Next we will open camera and analyze captured food photo.');
-      Alert.alert('Take Photo', 'Camera capture will be connected next.');
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert('Permission needed', 'Allow photo library access to add a food picture.');
       return;
     }
-
-    if (!linkInput.trim()) {
-      Alert.alert('Link Needed', `Paste a ${selectedChoice} link first.`);
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      quality: 0.85,
+      base64: true,
+    });
+    if (result.canceled) return;
+    const asset = result.assets[0];
+    if (!asset.base64) {
+      Alert.alert('Error', 'Could not read this image. Try another.');
       return;
     }
+    setPendingImage({ base64: asset.base64, mimeType: asset.mimeType ?? 'image/jpeg' });
+    setStatusMessage('Photo added. Add a dish name if you want, then tap Get recipe.');
+  };
 
-    setStatusMessage(`${selectedChoice} link ready. Next step is sending it to the recipe AI endpoint.`);
-    Alert.alert('Ready', `${selectedChoice} link captured. We can now generate recipe steps.`);
+  const pickFromCamera = async () => {
+    if (Platform.OS === 'web') {
+      Alert.alert('Phone only', 'Use Expo Go on your phone to take a picture.');
+      return;
+    }
+    const perm = await ImagePicker.requestCameraPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert('Permission needed', 'Allow camera access to photograph your food.');
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      allowsEditing: true,
+      quality: 0.85,
+      base64: true,
+    });
+    if (result.canceled) return;
+    const asset = result.assets[0];
+    if (!asset.base64) {
+      Alert.alert('Error', 'Could not read the photo. Try again.');
+      return;
+    }
+    setPendingImage({ base64: asset.base64, mimeType: asset.mimeType ?? 'image/jpeg' });
+    setStatusMessage('Photo captured. Optionally name the dish, then tap Get recipe.');
+  };
+
+  const handleGetRecipe = async () => {
+    if (busy || !canSubmit) return;
+
+    const name = dishName.trim();
+    const label =
+      name && pendingImage
+        ? `Looking up “${name}” and your photo…`
+        : name
+          ? `Finding a trusted-style recipe for “${name}”…`
+          : 'Reading your food photo…';
+
+    setAnalysisLabel(label);
+    setBusy(true);
+    setStatusMessage('Talking to SnapDish AI…');
+
+    try {
+      const payload: AnalyzeRecipeRequest = {};
+      if (name) payload.dishName = name;
+      if (pendingImage) {
+        payload.imageBase64 = pendingImage.base64;
+        payload.imageMimeType = pendingImage.mimeType;
+      }
+
+      const { recipe } = await analyzeRecipe(payload);
+
+      const sourceBits = [name ? `"${name}"` : null, pendingImage ? 'photo' : null].filter(Boolean);
+      const source = sourceBits.length ? sourceBits.join(' + ') : 'SnapDish';
+
+      router.push({
+        pathname: '/recipe-result',
+        params: {
+          source,
+          recipe: JSON.stringify(recipe),
+        },
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Could not get a recipe. Try again.';
+      setStatusMessage(msg);
+      Alert.alert('SnapDish', msg);
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -111,10 +185,13 @@ export default function HomeScreen() {
         style={styles.screen}
         contentContainerStyle={[styles.container, { paddingHorizontal: horizontalPadding }]}
         showsVerticalScrollIndicator={false}
-        nestedScrollEnabled
         keyboardShouldPersistTaps="handled">
         <View style={styles.topRow}>
-          <View style={styles.profileRow}>
+          <Pressable
+            style={styles.profileRow}
+            onPress={() => router.push('/(tabs)/profile')}
+            accessibilityRole="button"
+            accessibilityLabel="Open profile">
             <View style={styles.avatarFrame}>
               <Image
                 source="https://images.unsplash.com/photo-1438761681033-6461ffad8d80?auto=format&fit=crop&w=200&q=80"
@@ -122,153 +199,175 @@ export default function HomeScreen() {
                 contentFit="cover"
               />
             </View>
-            <View>
-              <ThemedText style={styles.profileName}>Samantha</ThemedText>
-              <ThemedText style={styles.profileHint}>Ready to cook?</ThemedText>
+            <View style={styles.profileTextBlock}>
+              <ThemedText style={styles.greeting}>Hi, Samantha</ThemedText>
+              <ThemedText style={styles.profileHint}>Profile & settings</ThemedText>
             </View>
-          </View>
+          </Pressable>
           <Pressable
-            style={styles.notificationButton}
-            onPress={() => Alert.alert('Notifications', 'Notifications panel will open here.')}
+            style={styles.iconGhost}
+            onPress={() => Alert.alert('Notifications', 'Coming soon.')}
             hitSlop={10}>
-            <Ionicons name="notifications-outline" size={18} color="#0F172A" />
+            <Ionicons name="notifications-outline" size={20} color={colors.text} />
           </Pressable>
         </View>
 
-        <ThemedText style={[styles.heading, { fontSize: headingFontSize, lineHeight: headingLineHeight }]}>
-          What&apos;s cooking today?
-        </ThemedText>
-
-        <View style={styles.searchContainer}>
-          <Ionicons name="link-outline" size={20} color="#64748B" />
-          <TextInput
-            placeholder={
-              isLinkChoice
-                ? `Copy/paste ${selectedChoice.toLowerCase()} link here`
-                : 'Image mode selected below'
-            }
-            placeholderTextColor="#94A3B8"
-            value={linkInput}
-            onChangeText={setLinkInput}
-            style={styles.searchInput}
-            autoCapitalize="none"
-            autoCorrect={false}
-            editable={isLinkChoice}
-          />
-        </View>
-
-        <Pressable
-          style={[styles.primaryGenerateButton, isGenerateDisabled && styles.primaryGenerateButtonDisabled]}
-          onPress={handleGenerate}
-          disabled={isGenerateDisabled}>
-          <Ionicons name="sparkles" size={18} color="#0F172A" />
-          <ThemedText style={styles.primaryGenerateButtonText}>
-            {selectedChoice === 'Upload Img' || selectedChoice === 'Take Photo'
-              ? `Continue with ${selectedChoice}`
-              : `Generate from ${selectedChoice}`}
+        <View style={styles.heroCard}>
+          <ThemedText style={styles.brandLine}>SnapDish</ThemedText>
+          <ThemedText style={styles.heroTitle}>What are we cooking?</ThemedText>
+          <ThemedText style={styles.heroSub}>
+            Name a dish and we’ll pull together a clear recipe — or snap a photo (or both).
           </ThemedText>
-        </Pressable>
 
-        <View style={styles.statusBox}>
-          <Ionicons name="information-circle-outline" size={16} color="#334155" />
-          <ThemedText style={styles.statusText}>{statusMessage}</ThemedText>
-        </View>
+          <View style={styles.inputShell}>
+            <Ionicons name="search" size={20} color={colors.textTertiary} style={styles.inputIcon} />
+            <TextInput
+              placeholder='e.g. "pad thai", "sourdough bread"'
+              placeholderTextColor={colors.textTertiary}
+              value={dishName}
+              onChangeText={setDishName}
+              style={styles.mainInput}
+              autoCorrect
+              returnKeyType="done"
+            />
+          </View>
 
-        <View style={styles.choicesGrid}>
-          {choices.map((choice) => (
-            <Pressable
-              key={choice.label}
-              onPress={() => setSelectedChoice(choice.label)}
-              style={[
-                styles.choiceCard,
-                { width: choiceCardWidth },
-                selectedChoice === choice.label && styles.choiceCardActive,
-              ]}>
-              <View style={styles.choiceIconWrap}>
-                {selectedChoice === choice.label ? (
-                  <MaterialCommunityIcons name="checkbox-marked-circle" size={20} color="#0F172A" />
-                ) : (
-                  choice.icon
-                )}
+          <View style={styles.suggestionRow}>
+            {SUGGESTIONS.map((s) => (
+              <Pressable key={s} style={styles.suggestionChip} onPress={() => setDishName(s)}>
+                <ThemedText style={styles.suggestionText}>{s}</ThemedText>
+              </Pressable>
+            ))}
+          </View>
+
+          <View style={styles.photoRow}>
+            <Pressable style={styles.photoAction} onPress={() => void pickFromGallery()}>
+              <View style={styles.photoIconCircle}>
+                <Ionicons name="images-outline" size={22} color={colors.text} />
               </View>
-              <ThemedText
-                style={[styles.choiceText, selectedChoice === choice.label && styles.choiceTextActive]}>
-                {choice.label}
-              </ThemedText>
+              <ThemedText style={styles.photoActionLabel}>Gallery</ThemedText>
             </Pressable>
-          ))}
+            <Pressable style={styles.photoAction} onPress={() => void pickFromCamera()}>
+              <View style={styles.photoIconCircle}>
+                <Ionicons name="camera-outline" size={22} color={colors.text} />
+              </View>
+              <ThemedText style={styles.photoActionLabel}>Camera</ThemedText>
+            </Pressable>
+          </View>
+
+          {pendingImage ? (
+            <View style={styles.previewRow}>
+              <ThemedText style={styles.previewLabel}>Your photo</ThemedText>
+              <View style={styles.previewBox}>
+                <Image
+                  source={{ uri: `data:${pendingImage.mimeType};base64,${pendingImage.base64}` }}
+                  style={styles.previewImage}
+                  contentFit="cover"
+                />
+                <Pressable style={styles.clearPhoto} onPress={() => setPendingImage(null)}>
+                  <Ionicons name="close" size={18} color="#FFF" />
+                </Pressable>
+              </View>
+            </View>
+          ) : null}
+
+          <Pressable
+            style={[styles.primaryCta, isGenerateDisabled && styles.primaryCtaDisabled]}
+            onPress={() => void handleGetRecipe()}
+            disabled={isGenerateDisabled}>
+            {busy ? (
+              <ActivityIndicator color="#FFFFFF" />
+            ) : (
+              <>
+                <Ionicons name="sparkles" size={18} color="#FFFFFF" />
+                <ThemedText style={styles.primaryCtaText}>Get recipe</ThemedText>
+              </>
+            )}
+          </Pressable>
         </View>
 
-        <View style={styles.section}>
-          <ThemedText style={styles.sectionTitle}>Trending Recipe</ThemedText>
+        <View style={styles.hintCard}>
+          <Ionicons name="information-circle-outline" size={18} color={colors.textSecondary} />
+          <ThemedText style={styles.hintText}>{statusMessage}</ThemedText>
         </View>
 
+        <ThemedText style={styles.sectionTitle}>Popular right now</ThemedText>
         <FlatList
           horizontal
           data={trendingRecipes}
           keyExtractor={(item) => item.id}
           renderItem={({ item }) => (
-            <View style={[styles.recipeCard, { width: cardWidth }]}>
-              <Image source={item.image} style={styles.recipeImage} contentFit="cover" />
-              <Pressable
-                style={styles.heartButton}
-                onPress={() => Alert.alert('Saved', `${item.title} added to favorites.`)}
-                hitSlop={8}>
-                <Ionicons name="heart" size={16} color="#EF4444" />
-              </Pressable>
-              <View style={styles.recipeInfo}>
-                <ThemedText style={styles.recipeTitle}>{item.title}</ThemedText>
-                <View style={styles.recipeMetaRow}>
-                  <Ionicons name="time-outline" size={14} color="#64748B" />
-                  <ThemedText style={styles.recipeMeta}>{item.time}</ThemedText>
+            <Pressable
+              style={[styles.trendCard, { width: cardWidth }]}
+              onPress={() => setDishName(item.title)}>
+              <Image source={item.image} style={styles.trendImage} contentFit="cover" />
+              <View style={styles.trendBody}>
+                <ThemedText style={styles.trendTitle}>{item.title}</ThemedText>
+                <View style={styles.trendMeta}>
+                  <Ionicons name="time-outline" size={14} color={colors.textTertiary} />
+                  <ThemedText style={styles.trendTime}>{item.time}</ThemedText>
                 </View>
               </View>
-            </View>
+            </Pressable>
           )}
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.carousel}
-          nestedScrollEnabled
-          keyboardShouldPersistTaps="handled"
         />
-
-        <Pressable style={styles.generateButton} onPress={handleGenerate}>
-          <Ionicons name="sparkles-outline" size={18} color="#0F172A" />
-          <ThemedText style={styles.generateButtonText}>Generate Recipe from {selectedChoice}</ThemedText>
-        </Pressable>
       </ScrollView>
+
+      {busy ? (
+        <View style={styles.loadingOverlay}>
+          <View style={styles.loadingCard}>
+            <ActivityIndicator size="large" color={colors.text} />
+            <ThemedText style={styles.loadingTitle}>Finding your recipe</ThemedText>
+            <ThemedText style={styles.loadingText}>{analysisLabel}</ThemedText>
+          </View>
+        </View>
+      ) : null}
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   safeArea: {
-    backgroundColor: '#F8FAFC',
+    backgroundColor: colors.canvas,
     flex: 1,
   },
   screen: {
-    backgroundColor: '#F8FAFC',
+    backgroundColor: colors.canvas,
   },
   container: {
-    gap: 14,
-    paddingBottom: 110,
-    paddingHorizontal: 14,
-    paddingTop: 10,
+    gap: 16,
+    paddingBottom: 120,
+    paddingTop: 8,
   },
   topRow: {
     alignItems: 'center',
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 4,
   },
   profileRow: {
     alignItems: 'center',
     flexDirection: 'row',
+    flex: 1,
     gap: 10,
   },
+  profileTextBlock: {
+    flex: 1,
+    minWidth: 0,
+  },
+  greeting: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  profileHint: {
+    color: colors.textTertiary,
+    fontSize: 12,
+    marginTop: 1,
+  },
   avatarFrame: {
-    borderColor: '#E2E8F0',
-    borderRadius: 24,
-    borderWidth: 1.5,
+    borderRadius: 22,
     height: 44,
     overflow: 'hidden',
     width: 44,
@@ -277,170 +376,232 @@ const styles = StyleSheet.create({
     height: '100%',
     width: '100%',
   },
-  profileName: {
-    color: '#111827',
-    fontSize: 18,
-    fontWeight: '600',
-  },
-  profileHint: {
-    color: '#64748B',
-    fontSize: 12,
-  },
-  notificationButton: {
+  iconGhost: {
     alignItems: 'center',
-    borderRadius: 16,
-    height: 36,
+    height: 40,
     justifyContent: 'center',
-    marginRight: -4,
-    width: 36,
+    width: 40,
   },
-  heading: {
-    color: '#0F172A',
-    fontSize: 34,
+  heroCard: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.xl,
+    padding: 18,
+    ...shadow.md,
+  },
+  brandLine: {
+    color: colors.brand,
+    fontSize: 13,
     fontWeight: '700',
-    lineHeight: 38,
+    letterSpacing: 0.3,
+    marginBottom: 4,
+    textTransform: 'uppercase',
   },
-  searchContainer: {
+  heroTitle: {
+    color: colors.text,
+    fontSize: 26,
+    fontWeight: '700',
+    lineHeight: 30,
+  },
+  heroSub: {
+    color: colors.textSecondary,
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 6,
+  },
+  inputShell: {
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 18,
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: radius.sm,
     flexDirection: 'row',
+    marginTop: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+  },
+  inputIcon: {
+    marginRight: 8,
+  },
+  mainInput: {
+    color: colors.text,
+    flex: 1,
+    fontSize: 16,
+    minHeight: 48,
+    paddingVertical: 10,
+  },
+  suggestionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 8,
+    marginTop: 12,
+  },
+  suggestionChip: {
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  suggestionText: {
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: '500',
+    opacity: 0.85,
+  },
+  photoRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 16,
+  },
+  photoAction: {
+    alignItems: 'center',
+    flex: 1,
+    flexDirection: 'row',
+    gap: 10,
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: radius.sm,
     paddingHorizontal: 14,
     paddingVertical: 12,
   },
-  searchInput: {
-    color: '#0F172A',
-    flex: 1,
-    fontSize: 15,
-  },
-  primaryGenerateButton: {
+  photoIconCircle: {
     alignItems: 'center',
-    backgroundColor: '#D9F27B',
-    borderRadius: 16,
+    backgroundColor: colors.surface,
+    borderRadius: radius.xs,
+    height: 40,
+    justifyContent: 'center',
+    width: 40,
+  },
+  photoActionLabel: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  previewRow: {
+    marginTop: 14,
+  },
+  previewLabel: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    marginBottom: 8,
+  },
+  previewBox: {
+    alignSelf: 'flex-start',
+    borderRadius: radius.sm,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  previewImage: {
+    height: 100,
+    width: 100,
+  },
+  clearPhoto: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    borderRadius: radius.sm,
+    height: 28,
+    justifyContent: 'center',
+    position: 'absolute',
+    right: 6,
+    top: 6,
+    width: 28,
+  },
+  primaryCta: {
+    alignItems: 'center',
+    backgroundColor: colors.text,
+    borderRadius: radius.sm,
     flexDirection: 'row',
     gap: 8,
     justifyContent: 'center',
-    paddingVertical: 13,
+    marginTop: 18,
+    paddingVertical: 14,
   },
-  primaryGenerateButtonText: {
-    color: '#0F172A',
-    fontSize: 15,
+  primaryCtaDisabled: {
+    opacity: 0.45,
+  },
+  primaryCtaText: {
+    color: '#FFFFFF',
+    fontSize: 16,
     fontWeight: '700',
   },
-  primaryGenerateButtonDisabled: {
-    opacity: 0.5,
-  },
-  statusBox: {
-    alignItems: 'center',
-    backgroundColor: '#EEF2FF',
-    borderRadius: 12,
+  hintCard: {
+    alignItems: 'flex-start',
+    backgroundColor: colors.surface,
+    borderRadius: radius.sm,
     flexDirection: 'row',
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    gap: 10,
+    padding: 14,
+    ...shadow.sm,
   },
-  statusText: {
-    color: '#334155',
+  hintText: {
+    color: colors.textSecondary,
     flex: 1,
     fontSize: 13,
     lineHeight: 18,
   },
-  choicesGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-    justifyContent: 'space-between',
-  },
-  choiceCard: {
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 14,
-    gap: 8,
-    minHeight: 82,
-    justifyContent: 'center',
-  },
-  choiceCardActive: {
-    backgroundColor: '#D9F27B',
-  },
-  choiceIconWrap: {
-    alignItems: 'center',
-    height: 22,
-    justifyContent: 'center',
-  },
-  choiceText: {
-    color: '#111827',
-    fontSize: 14,
-  },
-  choiceTextActive: {
-    fontWeight: '600',
-  },
-  section: {
-    marginTop: 6,
-  },
   sectionTitle: {
-    color: '#0F172A',
-    fontSize: 32,
+    color: colors.text,
+    fontSize: 20,
     fontWeight: '700',
+    marginTop: 4,
   },
   carousel: {
     gap: 12,
     paddingRight: 8,
   },
-  recipeCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
+  trendCard: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
     overflow: 'hidden',
-    paddingBottom: 10,
-    position: 'relative',
+    ...shadow.sm,
   },
-  recipeImage: {
-    height: 160,
+  trendImage: {
+    height: 120,
+    width: '100%',
   },
-  recipeInfo: {
-    gap: 4,
-    paddingHorizontal: 10,
-    paddingTop: 8,
+  trendBody: {
+    padding: 10,
   },
-  recipeTitle: {
-    color: '#111827',
+  trendTitle: {
+    color: colors.text,
     fontSize: 14,
     fontWeight: '600',
   },
-  recipeMetaRow: {
+  trendMeta: {
     alignItems: 'center',
     flexDirection: 'row',
     gap: 4,
+    marginTop: 4,
   },
-  recipeMeta: {
-    color: '#64748B',
-    fontSize: 13,
+  trendTime: {
+    color: colors.textTertiary,
+    fontSize: 12,
   },
-  heartButton: {
+  loadingOverlay: {
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 18,
-    height: 36,
+    backgroundColor: colors.overlay,
+    bottom: 0,
     justifyContent: 'center',
+    left: 0,
     position: 'absolute',
-    right: 10,
-    top: 10,
-    width: 36,
-    zIndex: 1,
+    right: 0,
+    top: 0,
   },
-  generateButton: {
+  loadingCard: {
     alignItems: 'center',
-    backgroundColor: '#EEF5CF',
-    borderRadius: 14,
-    flexDirection: 'row',
-    gap: 8,
-    justifyContent: 'center',
-    marginTop: 8,
-    paddingVertical: 14,
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    gap: 10,
+    marginHorizontal: 32,
+    paddingHorizontal: 24,
+    paddingVertical: 22,
+    ...shadow.md,
   },
-  generateButtonText: {
-    color: '#0F172A',
-    fontSize: 15,
+  loadingTitle: {
+    color: colors.text,
+    fontSize: 17,
     fontWeight: '700',
+  },
+  loadingText: {
+    color: colors.textSecondary,
+    fontSize: 14,
+    lineHeight: 20,
+    textAlign: 'center',
   },
 });

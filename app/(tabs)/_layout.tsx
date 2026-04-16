@@ -1,7 +1,9 @@
 import { Tabs } from 'expo-router';
 import React from 'react';
 import { Ionicons } from '@expo/vector-icons';
-import { StyleSheet, View } from 'react-native';
+import { Platform, StyleSheet, View } from 'react-native';
+
+import { colors, shadow } from '@/src/theme/snapdish';
 
 export default function TabLayout() {
   return (
@@ -11,8 +13,8 @@ export default function TabLayout() {
         tabBarShowLabel: false,
         tabBarStyle: styles.tabBar,
         tabBarItemStyle: styles.tabItem,
-        tabBarActiveTintColor: '#111827',
-        tabBarInactiveTintColor: '#E5E7EB',
+        tabBarActiveTintColor: colors.text,
+        tabBarInactiveTintColor: colors.tabInactive,
       }}>
       <Tabs.Screen
         name="index"
@@ -69,15 +71,15 @@ function TabIcon({ focused, icon }: { focused: boolean; icon: React.ReactNode })
 
 const styles = StyleSheet.create({
   tabBar: {
-    backgroundColor: '#0F172A',
+    backgroundColor: colors.tabBar,
     borderRadius: 32,
     borderTopWidth: 0,
-    bottom: 16,
-    elevation: 0,
+    bottom: Platform.OS === 'ios' ? 20 : 16,
     height: 72,
     left: 16,
     position: 'absolute',
     right: 16,
+    ...shadow.tabBar,
   },
   tabItem: {
     paddingVertical: 12,
@@ -90,6 +92,6 @@ const styles = StyleSheet.create({
     width: 40,
   },
   iconWrapActive: {
-    backgroundColor: '#D9F27B',
+    backgroundColor: colors.accentLime,
   },
 });

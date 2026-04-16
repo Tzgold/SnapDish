@@ -1,9 +1,10 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
-import { Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
+import { colors, radius, shadow } from '@/src/theme/snapdish';
 
 export default function ProfileScreen() {
   const { width } = useWindowDimensions();
@@ -55,7 +56,7 @@ export default function ProfileScreen() {
               <ThemedText style={[styles.name, { fontSize: nameSize, lineHeight: nameSize + 2 }]}>Samantha</ThemedText>
               <ThemedText style={styles.subtitle}>Food creator • Lagos</ThemedText>
               <View style={styles.badge}>
-                <Ionicons name="sparkles" size={12} color="#0F172A" />
+                <Ionicons name="sparkles" size={12} color={colors.text} />
                 <ThemedText style={styles.badgeText}>Pro member</ThemedText>
               </View>
             </View>
@@ -81,12 +82,15 @@ export default function ProfileScreen() {
           <ThemedText style={styles.sectionTitle}>Quick Actions</ThemedText>
           <View style={styles.actionList}>
             {quickActions.map((action) => (
-              <Pressable key={action.id} style={styles.actionBtn}>
+              <Pressable
+                key={action.id}
+                style={styles.actionBtn}
+                onPress={() => Alert.alert(action.label, 'This screen will open in a future update.')}>
                 <View style={styles.actionLeft}>
-                  <Ionicons name={action.icon} size={18} color="#334155" />
+                  <Ionicons name={action.icon} size={18} color={colors.textSecondary} />
                   <ThemedText style={styles.actionText}>{action.label}</ThemedText>
                 </View>
-                <Ionicons name="chevron-forward" size={16} color="#94A3B8" />
+                <Ionicons name="chevron-forward" size={16} color={colors.textTertiary} />
               </Pressable>
             ))}
           </View>
@@ -96,7 +100,10 @@ export default function ProfileScreen() {
           <ThemedText style={styles.sectionTitle}>Recently Generated</ThemedText>
           <View style={styles.recentList}>
             {recents.map((item) => (
-              <Pressable key={item.id} style={styles.recentCard}>
+              <Pressable
+                key={item.id}
+                style={styles.recentCard}
+                onPress={() => Alert.alert(item.title, 'Recipe detail screen coming soon.')}>
                 <Image source={item.image} style={styles.recentImage} contentFit="cover" />
                 <View style={styles.recentInfo}>
                   <ThemedText style={styles.recentTitle}>{item.title}</ThemedText>
@@ -113,21 +120,22 @@ export default function ProfileScreen() {
 
 const styles = StyleSheet.create({
   safeArea: {
-    backgroundColor: '#F8FAFC',
+    backgroundColor: colors.canvas,
     flex: 1,
   },
   container: {
-    backgroundColor: '#F8FAFC',
+    backgroundColor: colors.canvas,
     gap: 14,
     paddingHorizontal: 20,
     paddingTop: 20,
     paddingBottom: 110,
   },
   headerCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 18,
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
     gap: 14,
     padding: 14,
+    ...shadow.md,
   },
   headerTop: {
     alignItems: 'center',
@@ -148,19 +156,19 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   name: {
-    color: '#0F172A',
+    color: colors.text,
     fontSize: 28,
     fontWeight: '700',
     lineHeight: 30,
   },
   subtitle: {
-    color: '#64748B',
+    color: colors.textSecondary,
     fontSize: 13,
   },
   badge: {
     alignItems: 'center',
     alignSelf: 'flex-start',
-    backgroundColor: '#D9F27B',
+    backgroundColor: colors.accentLime,
     borderRadius: 10,
     flexDirection: 'row',
     gap: 4,
@@ -169,7 +177,7 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   badgeText: {
-    color: '#0F172A',
+    color: colors.text,
     fontSize: 12,
     fontWeight: '700',
   },
@@ -180,24 +188,24 @@ const styles = StyleSheet.create({
   },
   statCard: {
     alignItems: 'center',
-    backgroundColor: '#F8FAFC',
-    borderRadius: 12,
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: radius.sm,
     paddingVertical: 10,
   },
   statValue: {
-    color: '#0F172A',
+    color: colors.text,
     fontSize: 20,
     fontWeight: '700',
   },
   statLabel: {
-    color: '#64748B',
+    color: colors.textSecondary,
     fontSize: 12,
   },
   section: {
     gap: 8,
   },
   sectionTitle: {
-    color: '#0F172A',
+    color: colors.text,
     fontSize: 20,
     fontWeight: '700',
   },
@@ -206,12 +214,13 @@ const styles = StyleSheet.create({
   },
   actionBtn: {
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 14,
+    backgroundColor: colors.surface,
+    borderRadius: radius.sm,
     flexDirection: 'row',
     justifyContent: 'space-between',
     paddingHorizontal: 14,
     paddingVertical: 12,
+    ...shadow.sm,
   },
   actionLeft: {
     alignItems: 'center',
@@ -219,7 +228,7 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   actionText: {
-    color: '#0F172A',
+    color: colors.text,
     fontSize: 15,
     fontWeight: '600',
   },
@@ -228,12 +237,13 @@ const styles = StyleSheet.create({
   },
   recentCard: {
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 14,
+    backgroundColor: colors.surface,
+    borderRadius: radius.sm,
     flexDirection: 'row',
     gap: 10,
     overflow: 'hidden',
     paddingRight: 10,
+    ...shadow.sm,
   },
   recentImage: {
     height: 80,
@@ -244,12 +254,12 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   recentTitle: {
-    color: '#0F172A',
+    color: colors.text,
     fontSize: 15,
     fontWeight: '700',
   },
   recentHint: {
-    color: '#64748B',
+    color: colors.textSecondary,
     fontSize: 12,
   },
 });
