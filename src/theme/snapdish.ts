@@ -37,6 +37,26 @@ export const radius = {
   xxl: 28,
 } as const;
 
+export const typography = {
+  display: 34,
+  h1: 30,
+  h2: 24,
+  h3: 20,
+  title: 17,
+  body: 15,
+  bodySm: 14,
+  caption: 12,
+} as const;
+
+export const spacing = {
+  xxs: 4,
+  xs: 8,
+  sm: 12,
+  md: 16,
+  lg: 20,
+  xl: 24,
+} as const;
+
 export const shadow = {
   sm: {
     shadowColor: '#000',

@@ -1,10 +1,10 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
-import { colors, radius, shadow } from '@/src/theme/snapdish';
+import { colors, radius, shadow, typography } from '@/src/theme/snapdish';
 
 type CreateOption = {
   id: string;
@@ -15,8 +15,18 @@ type CreateOption = {
 };
 
 export default function CreateScreen() {
+  const handleOptionPress = (optionId: string) => {
+    if (optionId === 'name') {
+      Alert.alert('Start with a dish name', 'You can type your dish on Home and tap Get recipe.');
+    } else {
+      Alert.alert('Start with a photo', 'Use Gallery or Camera on Home, then tap Get recipe.');
+    }
+    router.push('/(tabs)');
+  };
+
   const { width } = useWindowDimensions();
-  const horizontalPadding = width < 360 ? 14 : 20;
+  const isSmall = width < 360;
+  const horizontalPadding = isSmall ? 14 : width >= 430 ? 24 : 20;
   const router = useRouter();
 
   const options: CreateOption[] = [
@@ -43,7 +53,7 @@ export default function CreateScreen() {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled">
         <View style={styles.header}>
-          <ThemedText style={styles.title}>Create</ThemedText>
+          <ThemedText style={[styles.title, { fontSize: isSmall ? typography.h1 - 2 : typography.h1 + 2 }]}>Create</ThemedText>
           <ThemedText style={styles.subtitle}>
             SnapDish turns a dish name and/or a photo into ingredients, steps, and timings.
           </ThemedText>
@@ -53,7 +63,7 @@ export default function CreateScreen() {
           <Pressable
             key={opt.id}
             style={[styles.optionCard, { backgroundColor: opt.accent }]}
-            onPress={() => router.push('/(tabs)')}>
+            onPress={() => handleOptionPress(opt.id)}>
             <View style={styles.optionIconWrap}>{opt.icon}</View>
             <View style={styles.optionText}>
               <ThemedText style={styles.optionTitle}>{opt.title}</ThemedText>

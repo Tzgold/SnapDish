@@ -3,26 +3,75 @@ import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
-import { Alert, Pressable, ScrollView, Share, StyleSheet, View } from 'react-native';
+import { Alert, Pressable, ScrollView, Share, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
+import { authClient } from '@/src/lib/auth-client';
 import { getMockRecipeResponse } from '@/src/services/analyze';
+import { apiFetch } from '@/src/services/http';
 import { RecipeResult } from '@/src/types/recipe';
-import { colors, radius, shadow } from '@/src/theme/snapdish';
+import { colors, radius, shadow, spacing, typography } from '@/src/theme/snapdish';
 
 type TabKey = 'ingredients' | 'directions';
 
 const HERO_IMAGE =
   'https://images.unsplash.com/photo-1631452180519-c014fe946bc7?auto=format&fit=crop&w=1200&q=80';
 
+const STOP_WORDS = new Set([
+  'fresh',
+  'large',
+  'small',
+  'optional',
+  'chopped',
+  'sliced',
+  'minced',
+  'ground',
+  'powder',
+  'cup',
+  'cups',
+  'tbsp',
+  'tsp',
+  'tablespoon',
+  'teaspoon',
+  'grams',
+  'g',
+  'ml',
+  'oz',
+  'to',
+  'taste',
+]);
+
+function ingredientKeywords(name: string) {
+  return name
+    .toLowerCase()
+    .split(/[^a-z]+/)
+    .filter((w) => w.length > 2 && !STOP_WORDS.has(w));
+}
+
+function computeCookableSteps(r: RecipeResult, checked: Set<string>) {
+  const missingIngredients = r.ingredients.filter((item) => !checked.has(`${item.name}-${item.quantity}`));
+  const missingKw = [...new Set(missingIngredients.flatMap((item) => ingredientKeywords(item.name)))];
+  return r.steps.filter((step) => {
+    const text = step.instruction.toLowerCase();
+    return !missingKw.some((word) => text.includes(word));
+  });
+}
+
 export default function RecipeResultScreen() {
   const router = useRouter();
+  const { data: session } = authClient.useSession();
+  const { width } = useWindowDimensions();
+  const isSmall = width < 360;
+  const isLarge = width >= 430;
   const params = useLocalSearchParams<{ recipe?: string; source?: string }>();
   const [activeTab, setActiveTab] = useState<TabKey>('ingredients');
   const [favorite, setFavorite] = useState(false);
   const [checkedIngredients, setCheckedIngredients] = useState<Set<string>>(new Set());
   const [servingsOverride, setServingsOverride] = useState<number | null>(null);
+  const [planReady, setPlanReady] = useState(false);
+  const [remoteRecipeId, setRemoteRecipeId] = useState<string | null>(null);
+  const [cloudBusy, setCloudBusy] = useState(false);
 
   const recipe = useMemo<RecipeResult>(() => {
     if (!params.recipe) return getMockRecipeResponse().recipe;
@@ -37,11 +86,26 @@ export default function RecipeResultScreen() {
     setServingsOverride(null);
     setCheckedIngredients(new Set());
     setFavorite(false);
+    setPlanReady(false);
+    setRemoteRecipeId(null);
     setActiveTab('ingredients');
   }, [recipe.recipeTitle]);
 
   const source = typeof params.source === 'string' ? params.source : 'AI recipe';
   const displayServings = servingsOverride ?? recipe.servings;
+  const selectedCount = checkedIngredients.size;
+  const totalIngredientCount = recipe.ingredients.length;
+  const selectedRatio = totalIngredientCount > 0 ? selectedCount / totalIngredientCount : 0;
+  const selectedCalories = Math.round((recipe.calories ?? 420) * selectedRatio);
+  const missingIngredients = recipe.ingredients.filter((item) => !checkedIngredients.has(`${item.name}-${item.quantity}`));
+  const missingKeywords = useMemo(
+    () => [...new Set(missingIngredients.flatMap((item) => ingredientKeywords(item.name)))],
+    [missingIngredients]
+  );
+  const cookableSteps = recipe.steps.filter((step) => {
+    const text = step.instruction.toLowerCase();
+    return !missingKeywords.some((word) => text.includes(word));
+  });
 
   const toggleIngredient = (key: string) => {
     setCheckedIngredients((prev) => {
@@ -50,6 +114,60 @@ export default function RecipeResultScreen() {
       else next.add(key);
       return next;
     });
+  };
+
+  const buildPlan = async () => {
+    if (selectedCount === 0) {
+      Alert.alert('Select ingredients', 'Choose at least one ingredient you already have.');
+      return;
+    }
+    if (session?.user) {
+      setCloudBusy(true);
+      try {
+        let id = remoteRecipeId;
+        if (!id) {
+          const res = await apiFetch('/api/recipes', {
+            method: 'POST',
+            body: JSON.stringify({ recipe, source }),
+          });
+          if (!res.ok) {
+            const t = await res.text();
+            throw new Error(t || 'Could not save recipe');
+          }
+          const data = (await res.json()) as { id: string };
+          id = data.id;
+          setRemoteRecipeId(id);
+        }
+        const estCal =
+          totalIngredientCount > 0
+            ? Math.round((recipe.calories ?? 420) * (checkedIngredients.size / totalIngredientCount))
+            : selectedCalories;
+        const stepsForPlan = computeCookableSteps(recipe, checkedIngredients);
+        await apiFetch(`/api/recipes/${id}/pantry`, {
+          method: 'POST',
+          body: JSON.stringify({
+            selectedKeys: Array.from(checkedIngredients),
+            estimatedCalories: estCal,
+          }),
+        });
+        await apiFetch(`/api/recipes/${id}/cook-session`, {
+          method: 'POST',
+          body: JSON.stringify({
+            plan: {
+              steps: stepsForPlan,
+              estimatedCalories: estCal,
+              servings: displayServings,
+            },
+          }),
+        });
+      } catch (e) {
+        Alert.alert('Cloud sync', e instanceof Error ? e.message : 'Could not sync your plan.');
+      } finally {
+        setCloudBusy(false);
+      }
+    }
+    setPlanReady(true);
+    setActiveTab('directions');
   };
 
   const onShare = async () => {
@@ -99,14 +217,14 @@ export default function RecipeResultScreen() {
             </View>
           </View>
           <View style={styles.heroBottom}>
-            <ThemedText style={styles.heroTitle} numberOfLines={2}>
+            <ThemedText style={[styles.heroTitle, { fontSize: isSmall ? 22 : isLarge ? 30 : 26 }]} numberOfLines={2}>
               {recipe.recipeTitle}
             </ThemedText>
-            <ThemedText style={styles.heroMeta}>Recipe · {source}</ThemedText>
+            <ThemedText style={[styles.heroMeta, { fontSize: isSmall ? typography.caption : 13 }]}>Recipe · {source}</ThemedText>
           </View>
         </View>
 
-        <View style={styles.card}>
+        <View style={[styles.card, { marginHorizontal: isSmall ? 12 : 14 }]}>
           <View style={styles.quickRow}>
             <QuickPill icon="flame-outline" label="Prep" value={`${recipe.prepTimeMinutes} min`} tint={colors.statPrep} iconColor={colors.statPrepIcon} />
             <QuickPill icon="restaurant-outline" label="Cook" value={`${recipe.cookTimeMinutes} min`} tint={colors.statCook} iconColor={colors.statCookIcon} />
@@ -129,7 +247,7 @@ export default function RecipeResultScreen() {
             />
             <StatBox
               label="Calories"
-              value={`${recipe.calories ?? '—'}`}
+              value={`${planReady ? selectedCalories : recipe.calories ?? '—'}`}
               icon="flame-outline"
               bg={colors.statCook}
               iconColor={colors.statCookIcon}
@@ -157,6 +275,30 @@ export default function RecipeResultScreen() {
                 <Ionicons name="add" size={18} color={colors.text} />
               </Pressable>
             </View>
+          </View>
+
+          <View style={styles.selectionCard}>
+            <ThemedText style={styles.selectionTitle}>What ingredients do you have?</ThemedText>
+            <ThemedText style={styles.selectionSub}>
+              Select what is available. We will estimate calories and adapt cooking steps for what you selected.
+            </ThemedText>
+            <View style={styles.selectionStats}>
+              <ThemedText style={styles.selectionStatText}>
+                {selectedCount}/{totalIngredientCount} selected
+              </ThemedText>
+              <ThemedText style={styles.selectionStatText}>
+                Est. calories: {selectedCalories}
+              </ThemedText>
+            </View>
+            <Pressable
+              style={[styles.planBtn, (selectedCount === 0 || cloudBusy) && styles.planBtnDisabled]}
+              onPress={() => void buildPlan()}
+              disabled={selectedCount === 0 || cloudBusy}>
+              <Ionicons name="sparkles-outline" size={16} color="#FFFFFF" />
+              <ThemedText style={styles.planBtnText}>
+                {cloudBusy ? 'Syncing…' : planReady ? 'Update my plan' : 'Build my cooking plan'}
+              </ThemedText>
+            </Pressable>
           </View>
 
           <View style={styles.tabRow}>
@@ -198,7 +340,15 @@ export default function RecipeResultScreen() {
             </View>
           ) : (
             <View style={styles.directionWrap}>
-              {recipe.steps.map((step) => (
+              {!planReady ? (
+                <View style={styles.directionHint}>
+                  <Ionicons name="list-outline" size={18} color={colors.textSecondary} />
+                  <ThemedText style={styles.directionHintText}>
+                    Select your ingredients first, then tap Build my cooking plan to get personalized steps.
+                  </ThemedText>
+                </View>
+              ) : null}
+              {(planReady ? cookableSteps : recipe.steps).map((step) => (
                 <View key={step.order} style={styles.stepCard}>
                   <View style={styles.stepHeader}>
                     <View style={styles.stepBadge}>
@@ -208,13 +358,23 @@ export default function RecipeResultScreen() {
                   </View>
                   <ThemedText style={styles.stepText}>{step.instruction}</ThemedText>
                   {step.durationMinutes ? (
-                    <Pressable style={styles.timerBtn} onPress={() => Alert.alert('Timer', `${step.durationMinutes} minute timer — coming soon.`)}>
+                    <Pressable
+                      style={styles.timerBtn}
+                      onPress={() => Alert.alert('Timer started', `${step.durationMinutes} minute timer started for Step ${step.order}.`)}>
                       <Ionicons name="timer-outline" size={18} color={colors.text} />
                       <ThemedText style={styles.timerBtnText}>Start {step.durationMinutes} min timer</ThemedText>
                     </Pressable>
                   ) : null}
                 </View>
               ))}
+              {planReady && cookableSteps.length === 0 ? (
+                <View style={styles.directionHint}>
+                  <Ionicons name="alert-circle-outline" size={18} color={colors.textSecondary} />
+                  <ThemedText style={styles.directionHintText}>
+                    None of the steps can be cooked with your current selection. Add more ingredients and update your plan.
+                  </ThemedText>
+                </View>
+              ) : null}
             </View>
           )}
 
@@ -298,7 +458,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   container: {
-    paddingBottom: 32,
+    paddingBottom: spacing.xl + 8,
   },
   heroWrap: {
     borderRadius: radius.xl,
@@ -342,7 +502,7 @@ const styles = StyleSheet.create({
   },
   heroTitle: {
     color: '#FFFFFF',
-    fontSize: 26,
+    fontSize: typography.h1 - 4,
     fontWeight: '700',
     lineHeight: 30,
     textShadowColor: 'rgba(0,0,0,0.35)',
@@ -351,19 +511,19 @@ const styles = StyleSheet.create({
   },
   heroMeta: {
     color: 'rgba(255,255,255,0.88)',
-    fontSize: 13,
+    fontSize: typography.caption + 1,
     fontWeight: '500',
     marginTop: 4,
   },
   card: {
     backgroundColor: colors.surface,
     borderRadius: radius.xxl,
-    gap: 12,
+    gap: spacing.sm,
     marginHorizontal: 14,
     marginTop: -28,
-    paddingBottom: 20,
-    paddingHorizontal: 16,
-    paddingTop: 18,
+    paddingBottom: spacing.lg,
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.md + 2,
     ...shadow.md,
   },
   quickRow: {
@@ -426,6 +586,49 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     fontSize: 14,
     fontWeight: '600',
+  },
+  selectionCard: {
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: radius.md,
+    gap: 8,
+    padding: 12,
+  },
+  selectionTitle: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  selectionSub: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  selectionStats: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  selectionStatText: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  planBtn: {
+    alignItems: 'center',
+    backgroundColor: colors.text,
+    borderRadius: radius.sm,
+    flexDirection: 'row',
+    gap: 8,
+    justifyContent: 'center',
+    marginTop: 2,
+    paddingVertical: 11,
+  },
+  planBtnDisabled: {
+    opacity: 0.45,
+  },
+  planBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
   },
   stepper: {
     alignItems: 'center',
@@ -528,6 +731,20 @@ const styles = StyleSheet.create({
   directionWrap: {
     gap: 12,
     marginTop: 4,
+  },
+  directionHint: {
+    alignItems: 'flex-start',
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: radius.sm,
+    flexDirection: 'row',
+    gap: 8,
+    padding: 12,
+  },
+  directionHintText: {
+    color: colors.textSecondary,
+    flex: 1,
+    fontSize: 13,
+    lineHeight: 18,
   },
   stepCard: {
     backgroundColor: colors.surfaceMuted,

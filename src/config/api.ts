@@ -13,4 +13,7 @@ export const API_BASE_URL =
 
 export const API_ROUTES = {
   analyzeRecipe: '/api/analyze-recipe',
+  authBase: '/api/auth',
+  me: '/api/me',
+  recipes: '/api/recipes',
 } as const;

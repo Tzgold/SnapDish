@@ -1,7 +1,9 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
+import { useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
 import {
+  Alert,
   FlatList,
   Pressable,
   StyleSheet,
@@ -12,7 +14,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
-import { colors, radius, shadow } from '@/src/theme/snapdish';
+import { getMockRecipeResponse } from '@/src/services/analyze';
+import { colors, radius, shadow, typography } from '@/src/theme/snapdish';
 
 type SavedRecipe = {
   id: string;
@@ -50,8 +53,10 @@ const MOCK_SAVED: SavedRecipe[] = [
 ];
 
 export default function SavedScreen() {
+  const router = useRouter();
   const { width } = useWindowDimensions();
-  const horizontalPadding = width < 360 ? 14 : 20;
+  const isSmall = width < 360;
+  const horizontalPadding = isSmall ? 14 : width >= 430 ? 24 : 20;
   const [query, setQuery] = useState('');
 
   const filtered = useMemo(() => {
@@ -60,10 +65,28 @@ export default function SavedScreen() {
     return MOCK_SAVED.filter((r) => r.title.toLowerCase().includes(q));
   }, [query]);
 
+  const openRecipe = (title: string) => {
+    const recipe = {
+      ...getMockRecipeResponse().recipe,
+      recipeTitle: title,
+    };
+    router.push({
+      pathname: '/recipe-result',
+      params: {
+        source: 'Saved recipes',
+        recipe: JSON.stringify(recipe),
+      },
+    });
+  };
+
+  const onMorePress = (title: string) => {
+    Alert.alert(title, 'Open this recipe card to view full ingredients and directions.');
+  };
+
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>
       <View style={[styles.header, { paddingHorizontal: horizontalPadding }]}>
-        <ThemedText style={styles.title}>Saved</ThemedText>
+        <ThemedText style={[styles.title, { fontSize: isSmall ? typography.h1 - 2 : typography.h1 + 2 }]}>Saved</ThemedText>
         <ThemedText style={styles.subtitle}>Recipes you’ve saved from Home or marked with the heart.</ThemedText>
       </View>
 
@@ -88,10 +111,7 @@ export default function SavedScreen() {
       <FlatList
         data={filtered}
         keyExtractor={(item) => item.id}
-        contentContainerStyle={[
-          styles.listContent,
-          { paddingHorizontal: horizontalPadding, paddingBottom: 110 },
-        ]}
+        contentContainerStyle={[styles.listContent, { paddingHorizontal: horizontalPadding, paddingBottom: 110 }]}
         ListEmptyComponent={
           <View style={styles.empty}>
             <Ionicons name="heart-outline" size={48} color={colors.border} />
@@ -102,7 +122,7 @@ export default function SavedScreen() {
           </View>
         }
         renderItem={({ item }) => (
-          <Pressable style={styles.card}>
+          <Pressable style={styles.card} onPress={() => openRecipe(item.title)}>
             <Image source={item.image} style={styles.cardImage} contentFit="cover" />
             <View style={styles.cardBody}>
               <ThemedText style={styles.cardTitle} numberOfLines={2}>
@@ -115,7 +135,7 @@ export default function SavedScreen() {
                 <ThemedText style={styles.cardMetaText}>{item.savedAt}</ThemedText>
               </View>
             </View>
-            <Pressable style={styles.moreBtn} hitSlop={8}>
+            <Pressable style={styles.moreBtn} hitSlop={8} onPress={() => onMorePress(item.title)}>
               <Ionicons name="ellipsis-horizontal" size={18} color={colors.textSecondary} />
             </Pressable>
           </Pressable>

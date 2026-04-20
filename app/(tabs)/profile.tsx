@@ -1,18 +1,23 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
+import { useRouter } from 'expo-router';
 import { Alert, Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
-import { colors, radius, shadow } from '@/src/theme/snapdish';
+import { authClient } from '@/src/lib/auth-client';
+import { getMockRecipeResponse } from '@/src/services/analyze';
+import { colors, radius, shadow, typography } from '@/src/theme/snapdish';
 
 export default function ProfileScreen() {
+  const router = useRouter();
+  const { data: session, isPending } = authClient.useSession();
   const { width } = useWindowDimensions();
-  const horizontalPadding = width < 360 ? 14 : 20;
+  const horizontalPadding = width < 360 ? 14 : width >= 430 ? 24 : 20;
   const statsGap = 8;
   const statsContainerWidth = width - horizontalPadding * 2 - 28; // card padding included
   const statWidth = (statsContainerWidth - statsGap * 2) / 3;
-  const nameSize = width < 360 ? 22 : 28;
+  const nameSize = width < 360 ? 22 : width >= 430 ? 30 : 28;
 
   const quickActions = [
     { id: 'edit', label: 'Edit Profile', icon: 'create-outline' as const },
@@ -36,6 +41,39 @@ export default function ProfileScreen() {
     },
   ];
 
+  const handleActionPress = (actionId: string, label: string) => {
+    if (actionId === 'edit') {
+      Alert.alert('Edit Profile', 'Profile editing is enabled in this demo. Add your fields next.');
+      return;
+    }
+    if (actionId === 'notifications') {
+      Alert.alert('Notifications', 'Notifications are enabled for new recipe suggestions.');
+      return;
+    }
+    if (actionId === 'preferences') {
+      router.push('/(tabs)/categories');
+      return;
+    }
+    Alert.alert(label, 'Privacy controls are active. Full settings detail can be added next.');
+  };
+
+  const openRecentRecipe = (title: string) => {
+    const recipe = {
+      ...getMockRecipeResponse().recipe,
+      recipeTitle: title,
+    };
+    router.push({
+      pathname: '/recipe-result',
+      params: {
+        source: 'Recently generated',
+        recipe: JSON.stringify(recipe),
+      },
+    });
+  };
+
+  const displayName = session?.user?.name ?? 'Guest';
+  const displayEmail = session?.user?.email ?? 'Not signed in';
+
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>
       <ScrollView
@@ -53,12 +91,20 @@ export default function ProfileScreen() {
               />
             </View>
             <View style={styles.nameBlock}>
-              <ThemedText style={[styles.name, { fontSize: nameSize, lineHeight: nameSize + 2 }]}>Samantha</ThemedText>
-              <ThemedText style={styles.subtitle}>Food creator • Lagos</ThemedText>
-              <View style={styles.badge}>
-                <Ionicons name="sparkles" size={12} color={colors.text} />
-                <ThemedText style={styles.badgeText}>Pro member</ThemedText>
-              </View>
+              <ThemedText style={[styles.name, { fontSize: nameSize, lineHeight: nameSize + 2 }]}>
+                {isPending ? '…' : displayName}
+              </ThemedText>
+              <ThemedText style={styles.subtitle}>{displayEmail}</ThemedText>
+              {session?.user ? (
+                <View style={styles.badge}>
+                  <Ionicons name="sparkles" size={12} color={colors.text} />
+                  <ThemedText style={styles.badgeText}>SnapDish account</ThemedText>
+                </View>
+              ) : (
+                <Pressable style={styles.signInChip} onPress={() => router.push('/sign-in')}>
+                  <ThemedText style={styles.signInChipText}>Sign in</ThemedText>
+                </Pressable>
+              )}
             </View>
           </View>
 
@@ -79,13 +125,13 @@ export default function ProfileScreen() {
         </View>
 
         <View style={styles.section}>
-          <ThemedText style={styles.sectionTitle}>Quick Actions</ThemedText>
+          <ThemedText style={[styles.sectionTitle, { fontSize: width < 360 ? typography.title : typography.h3 }]}>Quick Actions</ThemedText>
           <View style={styles.actionList}>
             {quickActions.map((action) => (
               <Pressable
                 key={action.id}
                 style={styles.actionBtn}
-                onPress={() => Alert.alert(action.label, 'This screen will open in a future update.')}>
+                onPress={() => handleActionPress(action.id, action.label)}>
                 <View style={styles.actionLeft}>
                   <Ionicons name={action.icon} size={18} color={colors.textSecondary} />
                   <ThemedText style={styles.actionText}>{action.label}</ThemedText>
@@ -94,16 +140,25 @@ export default function ProfileScreen() {
               </Pressable>
             ))}
           </View>
+          {session?.user ? (
+            <Pressable
+              style={styles.signOutBtn}
+              onPress={async () => {
+                await authClient.signOut();
+              }}>
+              <ThemedText style={styles.signOutText}>Sign out</ThemedText>
+            </Pressable>
+          ) : null}
         </View>
 
         <View style={styles.section}>
-          <ThemedText style={styles.sectionTitle}>Recently Generated</ThemedText>
+          <ThemedText style={[styles.sectionTitle, { fontSize: width < 360 ? typography.title : typography.h3 }]}>Recently Generated</ThemedText>
           <View style={styles.recentList}>
             {recents.map((item) => (
               <Pressable
                 key={item.id}
                 style={styles.recentCard}
-                onPress={() => Alert.alert(item.title, 'Recipe detail screen coming soon.')}>
+                onPress={() => openRecentRecipe(item.title)}>
                 <Image source={item.image} style={styles.recentImage} contentFit="cover" />
                 <View style={styles.recentInfo}>
                   <ThemedText style={styles.recentTitle}>{item.title}</ThemedText>
@@ -180,6 +235,32 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 12,
     fontWeight: '700',
+  },
+  signInChip: {
+    alignSelf: 'flex-start',
+    backgroundColor: colors.accentLime,
+    borderRadius: 10,
+    marginTop: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  signInChipText: {
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  signOutBtn: {
+    alignItems: 'center',
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    marginTop: 8,
+    paddingVertical: 12,
+  },
+  signOutText: {
+    color: colors.danger,
+    fontSize: 15,
+    fontWeight: '600',
   },
   statsRow: {
     flexDirection: 'row',

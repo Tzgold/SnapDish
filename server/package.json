@@ -4,13 +4,17 @@
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "dev": "node --watch src/index.js",
+    "auth:migrate": "npx @better-auth/cli@latest migrate"
   },
   "dependencies": {
+    "@better-auth/expo": "^1.6.5",
+    "better-auth": "^1.6.5",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "openai": "^4.77.3",
+    "pg": "^8.20.0",
     "zod": "^3.24.1"
   }
 }

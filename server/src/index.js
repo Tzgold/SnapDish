@@ -2,145 +2,295 @@ import 'dotenv/config';
 import cors from 'cors';
 import express from 'express';
 import OpenAI from 'openai';
+import { fromNodeHeaders, toNodeHandler } from 'better-auth/node';
 import { z } from 'zod';
 
-const app = express();
-app.use(cors());
-app.use(express.json({ limit: '12mb' }));
+import { auth, pool } from './auth.js';
+import {
+  AnalyzeBodySchema,
+  recipeFromDishName,
+  recipeFromImage,
+} from './recipe-ai.js';
 
+const app = express();
 const port = Number(process.env.PORT) || 4000;
-const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 
 const openaiKey = process.env.OPENAI_API_KEY;
 if (!openaiKey) {
   console.warn('Warning: OPENAI_API_KEY is not set. POST /api/analyze-recipe will fail.');
 }
 
-const openai = new OpenAI({ apiKey: openaiKey || 'missing' });
+const primaryModel = process.env.OPENAI_MODEL_PRIMARY || process.env.OPENAI_MODEL || 'gpt-4o-mini';
+const fallbackModel = process.env.OPENAI_MODEL_FALLBACK || primaryModel;
+const models = { primary: primaryModel, fallback: fallbackModel };
 
-const RecipeIngredientSchema = z.object({
-  name: z.string(),
-  quantity: z.string(),
-  optional: z.boolean().optional(),
+const openai = new OpenAI({
+  apiKey: openaiKey || 'missing',
+  timeout: Number(process.env.OPENAI_TIMEOUT_MS) || 120_000,
 });
 
-const RecipeStepSchema = z.object({
-  order: z.number().int().min(1),
-  instruction: z.string(),
-  durationMinutes: z.number().optional(),
-});
-
-const RecipeResultSchema = z.object({
-  recipeTitle: z.string(),
-  servings: z.number(),
-  prepTimeMinutes: z.number(),
-  cookTimeMinutes: z.number(),
-  totalTimeMinutes: z.number(),
-  calories: z.number().optional(),
-  rating: z.number().optional(),
-  confidenceScore: z.number(),
-  ingredients: z.array(RecipeIngredientSchema),
-  steps: z.array(RecipeStepSchema),
-  notes: z.array(z.string()).optional(),
-});
-
-const AnalyzeBodySchema = z
-  .object({
-    dishName: z.string().optional(),
-    imageBase64: z.string().optional(),
-    imageMimeType: z.string().optional(),
+app.use(
+  cors({
+    origin: true,
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Cookie', 'Authorization'],
   })
-  .refine(
-    (d) =>
-      (typeof d.dishName === 'string' && d.dishName.trim().length > 0) ||
-      (typeof d.imageBase64 === 'string' && d.imageBase64.replace(/\s/g, '').length > 0),
-    { message: 'Provide a dish name and/or a food photo (base64).' }
+);
+
+if (auth) {
+  app.all('/api/auth/*', toNodeHandler(auth));
+} else {
+  app.all('/api/auth/*', (_req, res) => {
+    res.status(503).json({
+      error: 'Authentication is not configured. Set DATABASE_URL and run Better Auth migrations.',
+    });
+  });
+}
+
+app.use(express.json({ limit: '12mb' }));
+
+async function ensureSnapdishTables() {
+  if (!pool) return;
+  // One statement per query — safer with Supabase pooler / some pg drivers.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS snapdish_recipes (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id text NOT NULL,
+      recipe jsonb NOT NULL,
+      source text,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )`);
+  await pool.query(
+    `CREATE INDEX IF NOT EXISTS snapdish_recipes_user_id_idx ON snapdish_recipes (user_id)`
   );
-
-const JSON_ONLY_SYSTEM = `You are SnapDish, a cooking assistant. Always respond with a single valid JSON object only (no markdown fences, no extra text).
-The JSON must match this shape:
-{
-  "recipeTitle": string,
-  "servings": number,
-  "prepTimeMinutes": number,
-  "cookTimeMinutes": number,
-  "totalTimeMinutes": number,
-  "calories": number (rough estimate),
-  "rating": number between 1 and 5 (quality of the recipe as written),
-  "confidenceScore": number between 0 and 1 (how well this matches the user's request),
-  "ingredients": [{ "name": string, "quantity": string, "optional": boolean optional }],
-  "steps": [{ "order": number starting at 1, "instruction": string, "durationMinutes": number optional }],
-  "notes": string[] (tips, substitutions, or caveats)
-}
-Ensure totalTimeMinutes is close to prepTimeMinutes + cookTimeMinutes. Steps must be ordered and practical.`;
-
-function stripJsonFromContent(raw) {
-  let text = raw.trim();
-  const fence = text.match(/^```(?:json)?\s*([\s\S]*?)```$/i);
-  if (fence) text = fence[1].trim();
-  return text;
-}
-
-function parseRecipeJson(raw) {
-  const text = stripJsonFromContent(raw);
-  const parsed = JSON.parse(text);
-  return RecipeResultSchema.parse(parsed);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS snapdish_saved (
+      user_id text NOT NULL,
+      recipe_id uuid NOT NULL REFERENCES snapdish_recipes (id) ON DELETE CASCADE,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (user_id, recipe_id)
+    )`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS snapdish_pantry_sessions (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id text NOT NULL,
+      recipe_id uuid NOT NULL REFERENCES snapdish_recipes (id) ON DELETE CASCADE,
+      selected_keys jsonb NOT NULL,
+      estimated_calories int,
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE (user_id, recipe_id)
+    )`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS snapdish_cook_sessions (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id text NOT NULL,
+      recipe_id uuid NOT NULL REFERENCES snapdish_recipes (id) ON DELETE CASCADE,
+      plan_json jsonb NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )`);
 }
 
-async function recipeFromDishName(dishName) {
-  const user = `The user wants a complete, cookable recipe for this dish or idea: "${dishName}".
-
-You do not have live web access. Use your knowledge as if you summarized trustworthy recipes from major cooking sites and classic techniques. Prefer widely recognized versions of the dish. If the name is vague, choose the most common interpretation and explain briefly in notes.
-
-Return JSON only.`;
-
-  const completion = await openai.chat.completions.create({
-    model,
-    temperature: 0.45,
-    response_format: { type: 'json_object' },
-    messages: [
-      { role: 'system', content: JSON_ONLY_SYSTEM },
-      { role: 'user', content: user },
-    ],
+async function requireSession(req, res, next) {
+  if (!auth) {
+    return res.status(503).json({ error: 'Auth not configured' });
+  }
+  const session = await auth.api.getSession({
+    headers: fromNodeHeaders(req.headers),
   });
-
-  const content = completion.choices[0]?.message?.content;
-  if (!content) throw new Error('Empty model response');
-  return parseRecipeJson(content);
+  if (!session?.user?.id) {
+    return res.status(401).json({ error: 'Sign in required' });
+  }
+  req.snapUser = session.user;
+  next();
 }
 
-async function recipeFromImage(base64, mimeType, dishHint) {
-  const mime = mimeType && mimeType.startsWith('image/') ? mimeType : 'image/jpeg';
-  const dataUrl = `data:${mime};base64,${base64}`;
+function requireDb(req, res, next) {
+  if (!pool) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+  next();
+}
 
-  const hint = dishHint
-    ? `The user says this is or should be like: "${dishHint}". Use the photo and this hint together.`
-    : 'Identify the dish from the photo if you can.';
+app.get('/health', (_req, res) => {
+  res.json({ ok: true, service: 'snapdish-api' });
+});
 
-  const userText = `${hint}
+app.get('/health/ready', async (_req, res) => {
+  const needsDb = Boolean(process.env.DATABASE_URL);
+  const checks = {
+    openai: Boolean(openaiKey),
+    database: false,
+    auth: Boolean(auth && pool),
+  };
+  try {
+    if (pool) {
+      await pool.query('select 1');
+      checks.database = true;
+    }
+  } catch (e) {
+    console.error('ready check db', e);
+  }
+  const ok = checks.openai && (!needsDb || (checks.database && checks.auth));
+  res.status(ok ? 200 : 503).json({ ok, checks, needsDatabase: needsDb });
+});
 
-Produce a complete recipe: title, servings, prep/cook/total times, estimated calories, ingredients with quantities, and numbered steps with optional per-step durationMinutes. If the image is unclear, lower confidenceScore and say so in notes.`;
-
-  const completion = await openai.chat.completions.create({
-    model,
-    temperature: 0.4,
-    response_format: { type: 'json_object' },
-    messages: [
-      { role: 'system', content: JSON_ONLY_SYSTEM },
-      {
-        role: 'user',
-        content: [
-          { type: 'text', text: userText },
-          { type: 'image_url', image_url: { url: dataUrl } },
-        ],
-      },
-    ],
+app.get('/api/me', async (req, res) => {
+  if (!auth) {
+    return res.status(503).json({ error: 'Auth not configured' });
+  }
+  const session = await auth.api.getSession({
+    headers: fromNodeHeaders(req.headers),
   });
+  return res.json(session);
+});
 
-  const content = completion.choices[0]?.message?.content;
-  if (!content) throw new Error('Empty model response');
-  return parseRecipeJson(content);
-}
+const SaveRecipeBody = z.object({
+  recipe: z.unknown(),
+  source: z.string().optional(),
+});
+
+app.post('/api/recipes', requireDb, requireSession, async (req, res) => {
+  try {
+    const body = SaveRecipeBody.parse(req.body);
+    const userId = req.snapUser.id;
+    const r = await pool.query(
+      `INSERT INTO snapdish_recipes (user_id, recipe, source)
+       VALUES ($1, $2::jsonb, $3)
+       RETURNING id, created_at`,
+      [userId, JSON.stringify(body.recipe), body.source ?? null]
+    );
+    return res.json({ id: r.rows[0].id, createdAt: r.rows[0].created_at });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: 'Invalid body', details: err.flatten() });
+    }
+    console.error(err);
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Save failed' });
+  }
+});
+
+app.get('/api/recipes', requireDb, requireSession, async (req, res) => {
+  try {
+    const userId = req.snapUser.id;
+    const r = await pool.query(
+      `SELECT id, recipe, source, created_at,
+        EXISTS (SELECT 1 FROM snapdish_saved s WHERE s.user_id = $1 AND s.recipe_id = snapdish_recipes.id) AS saved
+       FROM snapdish_recipes
+       WHERE user_id = $1
+       ORDER BY created_at DESC
+       LIMIT 50`,
+      [userId]
+    );
+    return res.json({ recipes: r.rows });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'List failed' });
+  }
+});
+
+app.post('/api/recipes/:id/save', requireDb, requireSession, async (req, res) => {
+  try {
+    const userId = req.snapUser.id;
+    const { id } = req.params;
+    const own = await pool.query(
+      `SELECT 1 FROM snapdish_recipes WHERE id = $1 AND user_id = $2`,
+      [id, userId]
+    );
+    if (own.rowCount === 0) {
+      return res.status(404).json({ error: 'Recipe not found' });
+    }
+    await pool.query(
+      `INSERT INTO snapdish_saved (user_id, recipe_id) VALUES ($1, $2)
+       ON CONFLICT (user_id, recipe_id) DO NOTHING`,
+      [userId, id]
+    );
+    return res.json({ saved: true });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Save failed' });
+  }
+});
+
+app.delete('/api/recipes/:id/save', requireDb, requireSession, async (req, res) => {
+  try {
+    const userId = req.snapUser.id;
+    const { id } = req.params;
+    await pool.query(`DELETE FROM snapdish_saved WHERE user_id = $1 AND recipe_id = $2`, [userId, id]);
+    return res.json({ saved: false });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Unsave failed' });
+  }
+});
+
+const PantryBody = z.object({
+  selectedKeys: z.array(z.string()),
+  estimatedCalories: z.number().optional(),
+});
+
+app.post('/api/recipes/:id/pantry', requireDb, requireSession, async (req, res) => {
+  try {
+    const userId = req.snapUser.id;
+    const { id } = req.params;
+    const body = PantryBody.parse(req.body);
+    const own = await pool.query(
+      `SELECT 1 FROM snapdish_recipes WHERE id = $1 AND user_id = $2`,
+      [id, userId]
+    );
+    if (own.rowCount === 0) {
+      return res.status(404).json({ error: 'Recipe not found' });
+    }
+    await pool.query(
+      `INSERT INTO snapdish_pantry_sessions (user_id, recipe_id, selected_keys, estimated_calories)
+       VALUES ($1, $2, $3::jsonb, $4)
+       ON CONFLICT (user_id, recipe_id) DO UPDATE SET
+         selected_keys = EXCLUDED.selected_keys,
+         estimated_calories = EXCLUDED.estimated_calories,
+         updated_at = now()`,
+      [userId, id, JSON.stringify(body.selectedKeys), body.estimatedCalories ?? null]
+    );
+    return res.json({ ok: true });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: 'Invalid body', details: err.flatten() });
+    }
+    console.error(err);
+    return res.status(500).json({ error: 'Pantry save failed' });
+  }
+});
+
+const CookBody = z.object({
+  plan: z.unknown(),
+});
+
+app.post('/api/recipes/:id/cook-session', requireDb, requireSession, async (req, res) => {
+  try {
+    const userId = req.snapUser.id;
+    const { id } = req.params;
+    const body = CookBody.parse(req.body);
+    const own = await pool.query(
+      `SELECT 1 FROM snapdish_recipes WHERE id = $1 AND user_id = $2`,
+      [id, userId]
+    );
+    if (own.rowCount === 0) {
+      return res.status(404).json({ error: 'Recipe not found' });
+    }
+    const r = await pool.query(
+      `INSERT INTO snapdish_cook_sessions (user_id, recipe_id, plan_json)
+       VALUES ($1, $2, $3::jsonb)
+       RETURNING id, created_at`,
+      [userId, id, JSON.stringify(body.plan)]
+    );
+    return res.json({ id: r.rows[0].id, createdAt: r.rows[0].created_at });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: 'Invalid body', details: err.flatten() });
+    }
+    console.error(err);
+    return res.status(500).json({ error: 'Cook session failed' });
+  }
+});
 
 app.post('/api/analyze-recipe', async (req, res) => {
   try {
@@ -158,14 +308,14 @@ app.post('/api/analyze-recipe', async (req, res) => {
 
     let recipe;
     if (hasImage && hasName) {
-      recipe = await recipeFromImage(cleanB64, body.imageMimeType, name);
+      recipe = await recipeFromImage(openai, models, cleanB64, body.imageMimeType, name);
     } else if (hasImage) {
-      recipe = await recipeFromImage(cleanB64, body.imageMimeType, '');
+      recipe = await recipeFromImage(openai, models, cleanB64, body.imageMimeType, '');
     } else {
-      recipe = await recipeFromDishName(name);
+      recipe = await recipeFromDishName(openai, models, name);
     }
 
-    return res.json({ recipe });
+    return res.json({ recipe, meta: { primaryModel, fallbackModel } });
   } catch (err) {
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: 'Invalid request', details: err.flatten() });
@@ -176,10 +326,11 @@ app.post('/api/analyze-recipe', async (req, res) => {
   }
 });
 
-app.get('/health', (_req, res) => {
-  res.json({ ok: true });
-});
-
-app.listen(port, () => {
+app.listen(port, async () => {
+  try {
+    await ensureSnapdishTables();
+  } catch (e) {
+    console.error('ensureSnapdishTables failed', e);
+  }
   console.log(`SnapDish API listening on http://localhost:${port}`);
 });

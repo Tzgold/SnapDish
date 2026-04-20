@@ -18,7 +18,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
-import { colors, radius, shadow } from '@/src/theme/snapdish';
+import { colors, radius, shadow, spacing, typography } from '@/src/theme/snapdish';
 import { analyzeRecipe } from '@/src/services/analyze';
 import type { AnalyzeRecipeRequest } from '@/src/types/recipe';
 
@@ -39,6 +39,8 @@ const SUGGESTIONS = ['Chicken tikka masala', 'Banana bread', 'Greek salad', 'Bee
 export default function HomeScreen() {
   const router = useRouter();
   const { width } = useWindowDimensions();
+  const isSmall = width < 360;
+  const isLarge = width >= 430;
   const [dishName, setDishName] = useState('');
   const [pendingImage, setPendingImage] = useState<PickedImage | null>(null);
   const [statusMessage, setStatusMessage] = useState(
@@ -47,7 +49,7 @@ export default function HomeScreen() {
   const [busy, setBusy] = useState(false);
   const [analysisLabel, setAnalysisLabel] = useState('');
 
-  const horizontalPadding = width < 360 ? 16 : 22;
+  const horizontalPadding = isSmall ? 14 : isLarge ? 24 : 20;
   const cardWidth = Math.min(260, Math.max(200, width * 0.58));
 
   const trendingRecipes: TrendingRecipe[] = [
@@ -206,7 +208,7 @@ export default function HomeScreen() {
           </Pressable>
           <Pressable
             style={styles.iconGhost}
-            onPress={() => Alert.alert('Notifications', 'Coming soon.')}
+            onPress={() => Alert.alert('Notifications', 'You are all caught up for now.')}
             hitSlop={10}>
             <Ionicons name="notifications-outline" size={20} color={colors.text} />
           </Pressable>
@@ -214,8 +216,8 @@ export default function HomeScreen() {
 
         <View style={styles.heroCard}>
           <ThemedText style={styles.brandLine}>SnapDish</ThemedText>
-          <ThemedText style={styles.heroTitle}>What are we cooking?</ThemedText>
-          <ThemedText style={styles.heroSub}>
+          <ThemedText style={[styles.heroTitle, { fontSize: isSmall ? 22 : isLarge ? 30 : 26 }]}>What are we cooking?</ThemedText>
+          <ThemedText style={[styles.heroSub, { fontSize: isSmall ? typography.caption + 1 : typography.bodySm }]}>
             Name a dish and we’ll pull together a clear recipe — or snap a photo (or both).
           </ThemedText>
 
@@ -226,7 +228,7 @@ export default function HomeScreen() {
               placeholderTextColor={colors.textTertiary}
               value={dishName}
               onChangeText={setDishName}
-              style={styles.mainInput}
+              style={[styles.mainInput, { fontSize: isSmall ? 15 : 16 }]}
               autoCorrect
               returnKeyType="done"
             />
@@ -291,7 +293,7 @@ export default function HomeScreen() {
           <ThemedText style={styles.hintText}>{statusMessage}</ThemedText>
         </View>
 
-        <ThemedText style={styles.sectionTitle}>Popular right now</ThemedText>
+        <ThemedText style={[styles.sectionTitle, { fontSize: isSmall ? typography.h3 - 1 : typography.h3 }]}>Popular right now</ThemedText>
         <FlatList
           horizontal
           data={trendingRecipes}
@@ -337,9 +339,9 @@ const styles = StyleSheet.create({
     backgroundColor: colors.canvas,
   },
   container: {
-    gap: 16,
+    gap: spacing.md,
     paddingBottom: 120,
-    paddingTop: 8,
+    paddingTop: spacing.xs,
   },
   topRow: {
     alignItems: 'center',
@@ -385,12 +387,12 @@ const styles = StyleSheet.create({
   heroCard: {
     backgroundColor: colors.surface,
     borderRadius: radius.xl,
-    padding: 18,
+    padding: spacing.lg - 2,
     ...shadow.md,
   },
   brandLine: {
     color: colors.brand,
-    fontSize: 13,
+    fontSize: typography.caption + 1,
     fontWeight: '700',
     letterSpacing: 0.3,
     marginBottom: 4,
@@ -398,13 +400,13 @@ const styles = StyleSheet.create({
   },
   heroTitle: {
     color: colors.text,
-    fontSize: 26,
+    fontSize: typography.h1 - 4,
     fontWeight: '700',
-    lineHeight: 30,
+    lineHeight: 34,
   },
   heroSub: {
     color: colors.textSecondary,
-    fontSize: 14,
+    fontSize: typography.bodySm,
     lineHeight: 20,
     marginTop: 6,
   },
@@ -537,7 +539,7 @@ const styles = StyleSheet.create({
   },
   sectionTitle: {
     color: colors.text,
-    fontSize: 20,
+    fontSize: typography.h3,
     fontWeight: '700',
     marginTop: 4,
   },

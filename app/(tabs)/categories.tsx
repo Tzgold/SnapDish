@@ -4,7 +4,7 @@ import { Alert, Pressable, ScrollView, StyleSheet, View, useWindowDimensions } f
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
-import { colors, radius, shadow } from '@/src/theme/snapdish';
+import { colors, radius, shadow, typography } from '@/src/theme/snapdish';
 
 type Category = {
   id: string;
@@ -26,7 +26,8 @@ const CATEGORIES: Category[] = [
 
 export default function CategoriesScreen() {
   const { width } = useWindowDimensions();
-  const horizontalPadding = width < 360 ? 14 : 20;
+  const isSmall = width < 360;
+  const horizontalPadding = isSmall ? 14 : width >= 430 ? 24 : 20;
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const gap = 10;
@@ -42,7 +43,7 @@ export default function CategoriesScreen() {
         contentContainerStyle={[styles.container, { paddingHorizontal: horizontalPadding, paddingBottom: 110 }]}
         showsVerticalScrollIndicator={false}>
         <View style={styles.header}>
-          <ThemedText style={styles.title}>Categories</ThemedText>
+          <ThemedText style={[styles.title, { fontSize: isSmall ? typography.h1 - 2 : typography.h1 + 2 }]}>Categories</ThemedText>
           <ThemedText style={styles.subtitle}>
             Tap a category to focus recipe ideas. Full filtering will use your saved and generated recipes.
           </ThemedText>
