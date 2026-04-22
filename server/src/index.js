@@ -89,6 +89,15 @@ async function ensureSnapdishTables() {
       plan_json jsonb NOT NULL,
       created_at timestamptz NOT NULL DEFAULT now()
     )`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS snapdish_user_preferences (
+      user_id text PRIMARY KEY,
+      goal text NOT NULL,
+      skill text NOT NULL,
+      time_pref text NOT NULL,
+      diet text,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`);
 }
 
 async function requireSession(req, res, next) {
@@ -111,6 +120,40 @@ function requireDb(req, res, next) {
   }
   next();
 }
+
+/** Loads saved onboarding/cooking preferences when the request has a valid session (optional for analyze). */
+async function loadOptionalUserPreferences(req) {
+  if (!auth || !pool) {
+    return null;
+  }
+  const session = await auth.api.getSession({
+    headers: fromNodeHeaders(req.headers),
+  });
+  if (!session?.user?.id) {
+    return null;
+  }
+  const r = await pool.query(
+    `SELECT goal, skill, time_pref AS time, diet
+     FROM snapdish_user_preferences
+     WHERE user_id = $1`,
+    [session.user.id]
+  );
+  if (r.rowCount === 0) {
+    return null;
+  }
+  return r.rows[0];
+}
+
+app.get('/', (_req, res) => {
+  res.type('html');
+  res.send(
+    `<!DOCTYPE html><html><head><meta charset="utf-8"><title>SnapDish API</title></head><body>` +
+      `<p><strong>SnapDish API</strong> is running.</p>` +
+      `<p>This URL is the backend; there is no web app here. Use the Expo app, or open ` +
+      `<a href="/health">/health</a> for a JSON check.</p>` +
+      `</body></html>`
+  );
+});
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true, service: 'snapdish-api' });
@@ -143,6 +186,57 @@ app.get('/api/me', async (req, res) => {
     headers: fromNodeHeaders(req.headers),
   });
   return res.json(session);
+});
+
+const PreferencesBody = z.object({
+  goal: z.enum(['learn', 'quick', 'healthy', 'budget']),
+  skill: z.enum(['beginner', 'intermediate', 'advanced']),
+  time: z.enum(['10-15', '30', '60+']),
+  diet: z.enum(['vegetarian', 'vegan', 'halal', 'none']).optional(),
+});
+
+app.get('/api/me/preferences', requireDb, requireSession, async (req, res) => {
+  try {
+    const userId = req.snapUser.id;
+    const r = await pool.query(
+      `SELECT goal, skill, time_pref AS time, diet, updated_at
+       FROM snapdish_user_preferences
+       WHERE user_id = $1`,
+      [userId]
+    );
+    if (r.rowCount === 0) {
+      return res.json({ preferences: null });
+    }
+    return res.json({ preferences: r.rows[0] });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Could not load preferences' });
+  }
+});
+
+app.post('/api/me/preferences', requireDb, requireSession, async (req, res) => {
+  try {
+    const userId = req.snapUser.id;
+    const body = PreferencesBody.parse(req.body);
+    await pool.query(
+      `INSERT INTO snapdish_user_preferences (user_id, goal, skill, time_pref, diet)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (user_id) DO UPDATE SET
+         goal = EXCLUDED.goal,
+         skill = EXCLUDED.skill,
+         time_pref = EXCLUDED.time_pref,
+         diet = EXCLUDED.diet,
+         updated_at = now()`,
+      [userId, body.goal, body.skill, body.time, body.diet ?? null]
+    );
+    return res.json({ ok: true });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: 'Invalid body', details: err.flatten() });
+    }
+    console.error(err);
+    return res.status(500).json({ error: 'Could not save preferences' });
+  }
 });
 
 const SaveRecipeBody = z.object({
@@ -306,16 +400,30 @@ app.post('/api/analyze-recipe', async (req, res) => {
       : '';
     const hasImage = cleanB64.length > 0;
 
-    let recipe;
-    if (hasImage && hasName) {
-      recipe = await recipeFromImage(openai, models, cleanB64, body.imageMimeType, name);
-    } else if (hasImage) {
-      recipe = await recipeFromImage(openai, models, cleanB64, body.imageMimeType, '');
-    } else {
-      recipe = await recipeFromDishName(openai, models, name);
+    let preferences = null;
+    try {
+      preferences = await loadOptionalUserPreferences(req);
+    } catch (prefErr) {
+      console.warn('analyze-recipe: could not load user preferences', prefErr);
     }
 
-    return res.json({ recipe, meta: { primaryModel, fallbackModel } });
+    let recipe;
+    if (hasImage && hasName) {
+      recipe = await recipeFromImage(openai, models, cleanB64, body.imageMimeType, name, preferences);
+    } else if (hasImage) {
+      recipe = await recipeFromImage(openai, models, cleanB64, body.imageMimeType, '', preferences);
+    } else {
+      recipe = await recipeFromDishName(openai, models, name, preferences);
+    }
+
+    return res.json({
+      recipe,
+      meta: {
+        primaryModel,
+        fallbackModel,
+        preferencesApplied: Boolean(preferences),
+      },
+    });
   } catch (err) {
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: 'Invalid request', details: err.flatten() });
@@ -326,11 +434,11 @@ app.post('/api/analyze-recipe', async (req, res) => {
   }
 });
 
-app.listen(port, async () => {
+app.listen(port, '0.0.0.0', async () => {
   try {
     await ensureSnapdishTables();
   } catch (e) {
     console.error('ensureSnapdishTables failed', e);
   }
-  console.log(`SnapDish API listening on http://localhost:${port}`);
+  console.log(`SnapDish API listening on http://0.0.0.0:${port} (reachable from your LAN at http://<this-pc-ip>:${port})`);
 });

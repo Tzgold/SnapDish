@@ -6,6 +6,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { authClient } from '@/src/lib/auth-client';
+import { syncOnboardingPreferences } from '@/src/services/preferences';
 import { colors, radius, shadow, spacing } from '@/src/theme/snapdish';
 
 export default function SignInScreen() {
@@ -13,6 +14,14 @@ export default function SignInScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
+
+  const handleBack = () => {
+    if (router.canGoBack()) {
+      router.back();
+      return;
+    }
+    router.replace('/onboarding');
+  };
 
   const onSignIn = async () => {
     const e = email.trim();
@@ -27,7 +36,12 @@ export default function SignInScreen() {
         Alert.alert('Sign in', error.message ?? 'Could not sign in.');
         return;
       }
-      router.replace('/(tabs)/profile');
+      try {
+        await syncOnboardingPreferences();
+      } catch (syncErr) {
+        console.warn('preferences sync failed', syncErr);
+      }
+      router.push('/profile');
     } catch (err) {
       Alert.alert('Sign in', err instanceof Error ? err.message : 'Could not sign in.');
     } finally {
@@ -38,7 +52,7 @@ export default function SignInScreen() {
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={12} style={styles.backBtn}>
+        <Pressable onPress={handleBack} hitSlop={12} style={styles.backBtn}>
           <Ionicons name="chevron-back" size={24} color={colors.text} />
         </Pressable>
         <ThemedText style={styles.title}>Sign in</ThemedText>

@@ -4,8 +4,8 @@
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js",
-    "auth:migrate": "npx @better-auth/cli@latest migrate"
+    "dev": "node scripts/dev-with-port-clean.js",
+    "auth:migrate": "npx @better-auth/cli@latest migrate --config ./src/auth-cli.js"
   },
   "dependencies": {
     "@better-auth/expo": "^1.6.5",

@@ -1,16 +1,22 @@
 import { API_BASE_URL, API_ROUTES } from '@/src/config/api';
 import { AnalyzeRecipeRequest, AnalyzeRecipeResponse } from '@/src/types/recipe';
+import { apiFetch } from '@/src/services/http';
 
 export async function analyzeRecipe(
   payload: AnalyzeRecipeRequest
 ): Promise<AnalyzeRecipeResponse> {
-  const response = await fetch(`${API_BASE_URL}${API_ROUTES.analyzeRecipe}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-  });
+  const url = `${API_BASE_URL}${API_ROUTES.analyzeRecipe}`;
+  let response: Response;
+  try {
+    response = await apiFetch(API_ROUTES.analyzeRecipe, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    throw new Error(
+      `Could not reach API at ${url}. Check EXPO_PUBLIC_API_URL, ensure backend is running, and verify phone + PC are on the same Wi-Fi.`
+    );
+  }
 
   if (!response.ok) {
     const errorText = await response.text();

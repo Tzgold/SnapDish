@@ -18,6 +18,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
+import { authClient } from '@/src/lib/auth-client';
 import { colors, radius, shadow, spacing, typography } from '@/src/theme/snapdish';
 import { analyzeRecipe } from '@/src/services/analyze';
 import type { AnalyzeRecipeRequest } from '@/src/types/recipe';
@@ -38,6 +39,7 @@ const SUGGESTIONS = ['Chicken tikka masala', 'Banana bread', 'Greek salad', 'Bee
 
 export default function HomeScreen() {
   const router = useRouter();
+  const { data: session } = authClient.useSession();
   const { width } = useWindowDimensions();
   const isSmall = width < 360;
   const isLarge = width >= 430;
@@ -160,7 +162,7 @@ export default function HomeScreen() {
         payload.imageMimeType = pendingImage.mimeType;
       }
 
-      const { recipe } = await analyzeRecipe(payload);
+      const { recipe, meta } = await analyzeRecipe(payload);
 
       const sourceBits = [name ? `"${name}"` : null, pendingImage ? 'photo' : null].filter(Boolean);
       const source = sourceBits.length ? sourceBits.join(' + ') : 'SnapDish';
@@ -170,6 +172,7 @@ export default function HomeScreen() {
         params: {
           source,
           recipe: JSON.stringify(recipe),
+          ...(meta?.preferencesApplied ? { preferencesApplied: '1' } : {}),
         },
       });
     } catch (e) {
@@ -181,6 +184,9 @@ export default function HomeScreen() {
     }
   };
 
+  const displayName = session?.user?.name?.trim() || 'Chef';
+  const initial = displayName.charAt(0).toUpperCase();
+
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>
       <ScrollView
@@ -191,18 +197,20 @@ export default function HomeScreen() {
         <View style={styles.topRow}>
           <Pressable
             style={styles.profileRow}
-            onPress={() => router.push('/(tabs)/profile')}
+            onPress={() => router.push('/profile')}
             accessibilityRole="button"
             accessibilityLabel="Open profile">
             <View style={styles.avatarFrame}>
-              <Image
-                source="https://images.unsplash.com/photo-1438761681033-6461ffad8d80?auto=format&fit=crop&w=200&q=80"
-                style={styles.avatarImage}
-                contentFit="cover"
-              />
+              {session?.user?.image ? (
+                <Image source={session.user.image} style={styles.avatarImage} contentFit="cover" />
+              ) : (
+                <View style={styles.avatarFallback}>
+                  <ThemedText style={styles.avatarInitial}>{initial}</ThemedText>
+                </View>
+              )}
             </View>
             <View style={styles.profileTextBlock}>
-              <ThemedText style={styles.greeting}>Hi, Samantha</ThemedText>
+              <ThemedText style={styles.greeting}>Hi, {displayName}</ThemedText>
               <ThemedText style={styles.profileHint}>Profile & settings</ThemedText>
             </View>
           </Pressable>
@@ -377,6 +385,18 @@ const styles = StyleSheet.create({
   avatarImage: {
     height: '100%',
     width: '100%',
+  },
+  avatarFallback: {
+    alignItems: 'center',
+    backgroundColor: colors.accentLime,
+    height: '100%',
+    justifyContent: 'center',
+    width: '100%',
+  },
+  avatarInitial: {
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: '700',
   },
   iconGhost: {
     alignItems: 'center',

@@ -1,17 +1,26 @@
+import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
 import { expo } from '@better-auth/expo';
 import { betterAuth } from 'better-auth';
 import { Pool } from 'pg';
 
-const databaseUrl = process.env.DATABASE_URL;
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
+
+const databaseUrl = process.env.DATABASE_URL?.trim();
+
+const needsPgSsl =
+  process.env.DATABASE_SSL === 'true' ||
+  /sslmode=require/i.test(databaseUrl || '') ||
+  /\.supabase\.co/i.test(databaseUrl || '');
 
 /** Shared pool for Better Auth and SnapDish app queries */
 export const pool = databaseUrl
   ? new Pool({
       connectionString: databaseUrl,
-      ssl:
-        process.env.DATABASE_SSL === 'true' || /sslmode=require/i.test(databaseUrl || '')
-          ? { rejectUnauthorized: false }
-          : undefined,
+      ssl: needsPgSsl ? { rejectUnauthorized: false } : undefined,
     })
   : null;
 

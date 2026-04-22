@@ -64,7 +64,7 @@ export default function RecipeResultScreen() {
   const { width } = useWindowDimensions();
   const isSmall = width < 360;
   const isLarge = width >= 430;
-  const params = useLocalSearchParams<{ recipe?: string; source?: string }>();
+  const params = useLocalSearchParams<{ recipe?: string; source?: string; preferencesApplied?: string }>();
   const [activeTab, setActiveTab] = useState<TabKey>('ingredients');
   const [favorite, setFavorite] = useState(false);
   const [checkedIngredients, setCheckedIngredients] = useState<Set<string>>(new Set());
@@ -92,6 +92,7 @@ export default function RecipeResultScreen() {
   }, [recipe.recipeTitle]);
 
   const source = typeof params.source === 'string' ? params.source : 'AI recipe';
+  const preferencesApplied = params.preferencesApplied === '1';
   const displayServings = servingsOverride ?? recipe.servings;
   const selectedCount = checkedIngredients.size;
   const totalIngredientCount = recipe.ingredients.length;
@@ -194,7 +195,13 @@ export default function RecipeResultScreen() {
           <View style={styles.heroTopBar}>
             <Pressable
               style={styles.roundBtn}
-              onPress={() => router.back()}
+              onPress={() => {
+                if (router.canGoBack()) {
+                  router.back();
+                  return;
+                }
+                router.push('/profile');
+              }}
               accessibilityRole="button"
               accessibilityLabel="Close recipe">
               <Ionicons name="close" size={20} color={colors.text} />
@@ -221,6 +228,12 @@ export default function RecipeResultScreen() {
               {recipe.recipeTitle}
             </ThemedText>
             <ThemedText style={[styles.heroMeta, { fontSize: isSmall ? typography.caption : 13 }]}>Recipe · {source}</ThemedText>
+            {preferencesApplied ? (
+              <View style={styles.prefNotice}>
+                <Ionicons name="options-outline" size={14} color={colors.brand} />
+                <ThemedText style={styles.prefNoticeText}>Tailored to your saved preferences</ThemedText>
+              </View>
+            ) : null}
           </View>
         </View>
 
@@ -514,6 +527,17 @@ const styles = StyleSheet.create({
     fontSize: typography.caption + 1,
     fontWeight: '500',
     marginTop: 4,
+  },
+  prefNotice: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 6,
+    marginTop: 8,
+  },
+  prefNoticeText: {
+    color: 'rgba(255,255,255,0.92)',
+    fontSize: 12,
+    fontWeight: '600',
   },
   card: {
     backgroundColor: colors.surface,

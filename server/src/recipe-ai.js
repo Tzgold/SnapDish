@@ -87,6 +87,49 @@ function normalizeRecipe(recipe) {
  * @param {number} temperature
  * @param {() => Promise<Array<{ role: string; content: unknown }>>} getMessages
  */
+/**
+ * @param {{ goal?: string; skill?: string; time?: string; diet?: string | null } | null | undefined} prefs
+ */
+export function buildPreferenceInstructions(prefs) {
+  if (!prefs) return '';
+  const { goal, skill, time, diet } = prefs;
+  const lines = ['User preferences (follow these when choosing dish style, ingredients, and step detail):'];
+  if (goal === 'learn') {
+    lines.push('- Learning focus: explain techniques briefly where it helps a newer cook.');
+  } else if (goal === 'quick') {
+    lines.push('- Speed: prioritize fewer steps and faster methods; avoid unnecessarily long prep.');
+  } else if (goal === 'healthy') {
+    lines.push('- Health: favor balanced meals, vegetables, lean proteins; suggest lighter swaps in notes when relevant.');
+  } else if (goal === 'budget') {
+    lines.push('- Budget: use affordable, common ingredients; avoid rare specialty items unless essential.');
+  }
+  if (skill === 'beginner') {
+    lines.push('- Skill: beginner — simple techniques, clear wording, avoid advanced jargon.');
+  } else if (skill === 'intermediate') {
+    lines.push('- Skill: intermediate — standard home-cooking techniques are fine.');
+  } else if (skill === 'advanced') {
+    lines.push('- Skill: advanced — refined techniques and chef-style detail are welcome.');
+  }
+  if (time === '10-15') {
+    lines.push('- Time: aim for about 10–15 minutes total (prep + cook) when realistic; if the dish cannot fit, say so in notes and get as close as possible.');
+  } else if (time === '30') {
+    lines.push('- Time: aim for roughly ~30 minutes total.');
+  } else if (time === '60+') {
+    lines.push('- Time: longer recipes (around an hour or more) are OK.');
+  }
+  if (diet === 'vegetarian') {
+    lines.push('- Diet: vegetarian — no meat or fish; dairy/eggs allowed unless you choose a fully plant-based variant and state it.');
+  } else if (diet === 'vegan') {
+    lines.push('- Diet: vegan — no animal products (meat, fish, dairy, eggs, honey).');
+  } else if (diet === 'halal') {
+    lines.push('- Diet: halal — no pork or alcohol; use halal-friendly ingredients.');
+  } else if (diet === 'none') {
+    lines.push('- Diet: no specific restriction.');
+  }
+  if (lines.length === 1) return '';
+  return `\n\n${lines.join('\n')}`;
+}
+
 async function withPrimaryFallback(openai, primaryModel, fallbackModel, temperature, getMessages) {
   const tryModel = async (model) => {
     const messages = await getMessages();
@@ -123,10 +166,12 @@ async function withPrimaryFallback(openai, primaryModel, fallbackModel, temperat
  * @param {OpenAI} openai
  * @param {{ primary: string; fallback: string }} models
  */
-export async function recipeFromDishName(openai, models, dishName) {
+export async function recipeFromDishName(openai, models, dishName, preferences) {
+  const prefBlock = buildPreferenceInstructions(preferences);
   const user = `The user wants a complete, cookable recipe for this dish or idea: "${dishName}".
 
 You do not have live web access. Use your knowledge as if you summarized trustworthy recipes from major cooking sites and classic techniques. Prefer widely recognized versions of the dish. If the name is vague, choose the most common interpretation and explain briefly in notes.
+${prefBlock}
 
 Return JSON only.`;
 
@@ -140,7 +185,7 @@ Return JSON only.`;
  * @param {OpenAI} openai
  * @param {{ primary: string; fallback: string }} models
  */
-export async function recipeFromImage(openai, models, base64, mimeType, dishHint) {
+export async function recipeFromImage(openai, models, base64, mimeType, dishHint, preferences) {
   const mime = mimeType && mimeType.startsWith('image/') ? mimeType : 'image/jpeg';
   const dataUrl = `data:${mime};base64,${base64}`;
 
@@ -148,9 +193,12 @@ export async function recipeFromImage(openai, models, base64, mimeType, dishHint
     ? `The user says this is or should be like: "${dishHint}". Use the photo and this hint together.`
     : 'Identify the dish from the photo if you can.';
 
+  const prefBlock = buildPreferenceInstructions(preferences);
+
   const userText = `${hint}
 
-Produce a complete recipe: title, servings, prep/cook/total times, estimated calories, ingredients with quantities, and numbered steps with optional per-step durationMinutes. If the image is unclear, lower confidenceScore and say so in notes.`;
+Produce a complete recipe: title, servings, prep/cook/total times, estimated calories, ingredients with quantities, and numbered steps with optional per-step durationMinutes. If the image is unclear, lower confidenceScore and say so in notes.
+${prefBlock}`;
 
   return withPrimaryFallback(openai, models.primary, models.fallback, 0.4, async () => [
     { role: 'system', content: JSON_ONLY_SYSTEM },

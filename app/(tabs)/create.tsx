@@ -21,7 +21,7 @@ export default function CreateScreen() {
     } else {
       Alert.alert('Start with a photo', 'Use Gallery or Camera on Home, then tap Get recipe.');
     }
-    router.push('/(tabs)');
+    router.push('/');
   };
 
   const { width } = useWindowDimensions();
@@ -73,7 +73,7 @@ export default function CreateScreen() {
           </Pressable>
         ))}
 
-        <Pressable style={styles.secondaryBtn} onPress={() => router.push('/(tabs)')}>
+        <Pressable style={styles.secondaryBtn} onPress={() => router.push('/')}>
           <Ionicons name="home-outline" size={18} color="#FFFFFF" />
           <ThemedText style={styles.secondaryBtnText}>Open Home</ThemedText>
         </Pressable>

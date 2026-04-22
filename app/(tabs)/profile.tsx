@@ -1,11 +1,12 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
-import { Alert, Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { authClient } from '@/src/lib/auth-client';
+import { clearPreAuthOnboarding } from '@/src/lib/pre-auth-onboarding';
 import { getMockRecipeResponse } from '@/src/services/analyze';
 import { colors, radius, shadow, typography } from '@/src/theme/snapdish';
 
@@ -18,13 +19,6 @@ export default function ProfileScreen() {
   const statsContainerWidth = width - horizontalPadding * 2 - 28; // card padding included
   const statWidth = (statsContainerWidth - statsGap * 2) / 3;
   const nameSize = width < 360 ? 22 : width >= 430 ? 30 : 28;
-
-  const quickActions = [
-    { id: 'edit', label: 'Edit Profile', icon: 'create-outline' as const },
-    { id: 'notifications', label: 'Notifications', icon: 'notifications-outline' as const },
-    { id: 'preferences', label: 'Food Preferences', icon: 'restaurant-outline' as const },
-    { id: 'privacy', label: 'Privacy & Security', icon: 'shield-checkmark-outline' as const },
-  ];
 
   const recents = [
     {
@@ -40,22 +34,6 @@ export default function ProfileScreen() {
         'https://images.unsplash.com/photo-1604908554027-81f2fa8f7f65?auto=format&fit=crop&w=900&q=80',
     },
   ];
-
-  const handleActionPress = (actionId: string, label: string) => {
-    if (actionId === 'edit') {
-      Alert.alert('Edit Profile', 'Profile editing is enabled in this demo. Add your fields next.');
-      return;
-    }
-    if (actionId === 'notifications') {
-      Alert.alert('Notifications', 'Notifications are enabled for new recipe suggestions.');
-      return;
-    }
-    if (actionId === 'preferences') {
-      router.push('/(tabs)/categories');
-      return;
-    }
-    Alert.alert(label, 'Privacy controls are active. Full settings detail can be added next.');
-  };
 
   const openRecentRecipe = (title: string) => {
     const recipe = {
@@ -84,11 +62,15 @@ export default function ProfileScreen() {
         <View style={styles.headerCard}>
           <View style={styles.headerTop}>
             <View style={styles.avatarWrap}>
-              <Image
-                source="https://images.unsplash.com/photo-1438761681033-6461ffad8d80?auto=format&fit=crop&w=200&q=80"
-                style={styles.avatarImage}
-                contentFit="cover"
-              />
+              {session?.user?.image ? (
+                <Image source={session.user.image} style={styles.avatarImage} contentFit="cover" />
+              ) : (
+                <View style={styles.avatarFallback}>
+                  <ThemedText style={styles.avatarFallbackText}>
+                    {(displayName.charAt(0) || 'U').toUpperCase()}
+                  </ThemedText>
+                </View>
+              )}
             </View>
             <View style={styles.nameBlock}>
               <ThemedText style={[styles.name, { fontSize: nameSize, lineHeight: nameSize + 2 }]}>
@@ -122,33 +104,27 @@ export default function ProfileScreen() {
               <ThemedText style={styles.statLabel}>Rating</ThemedText>
             </View>
           </View>
-        </View>
-
-        <View style={styles.section}>
-          <ThemedText style={[styles.sectionTitle, { fontSize: width < 360 ? typography.title : typography.h3 }]}>Quick Actions</ThemedText>
-          <View style={styles.actionList}>
-            {quickActions.map((action) => (
-              <Pressable
-                key={action.id}
-                style={styles.actionBtn}
-                onPress={() => handleActionPress(action.id, action.label)}>
-                <View style={styles.actionLeft}>
-                  <Ionicons name={action.icon} size={18} color={colors.textSecondary} />
-                  <ThemedText style={styles.actionText}>{action.label}</ThemedText>
-                </View>
-                <Ionicons name="chevron-forward" size={16} color={colors.textTertiary} />
-              </Pressable>
-            ))}
-          </View>
-          {session?.user ? (
-            <Pressable
-              style={styles.signOutBtn}
-              onPress={async () => {
-                await authClient.signOut();
-              }}>
-              <ThemedText style={styles.signOutText}>Sign out</ThemedText>
+          <View style={styles.ctaRow}>
+            <Pressable style={styles.inlineBtn} onPress={() => router.push('/settings')}>
+              <Ionicons name="settings-outline" size={16} color={colors.text} />
+              <ThemedText style={styles.inlineBtnText}>Settings</ThemedText>
             </Pressable>
-          ) : null}
+            {session?.user ? (
+              <Pressable
+                style={[styles.inlineBtn, styles.signOutInlineBtn]}
+                onPress={async () => {
+                  await clearPreAuthOnboarding();
+                  await authClient.signOut();
+                }}>
+                <Ionicons name="log-out-outline" size={16} color={colors.danger} />
+                <ThemedText style={styles.signOutInlineText}>Sign out</ThemedText>
+              </Pressable>
+            ) : (
+              <Pressable style={styles.inlineBtn} onPress={() => router.push('/sign-in')}>
+                <ThemedText style={styles.inlineBtnText}>Sign in</ThemedText>
+              </Pressable>
+            )}
+          </View>
         </View>
 
         <View style={styles.section}>
@@ -207,6 +183,18 @@ const styles = StyleSheet.create({
     height: '100%',
     width: '100%',
   },
+  avatarFallback: {
+    alignItems: 'center',
+    backgroundColor: colors.accentLime,
+    height: '100%',
+    justifyContent: 'center',
+    width: '100%',
+  },
+  avatarFallbackText: {
+    color: colors.text,
+    fontSize: 22,
+    fontWeight: '700',
+  },
   nameBlock: {
     flex: 1,
   },
@@ -249,18 +237,33 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
-  signOutBtn: {
-    alignItems: 'center',
-    borderColor: colors.border,
-    borderRadius: radius.sm,
-    borderWidth: 1,
-    marginTop: 8,
-    paddingVertical: 12,
+  ctaRow: {
+    flexDirection: 'row',
+    gap: 8,
   },
-  signOutText: {
+  inlineBtn: {
+    alignItems: 'center',
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: radius.sm,
+    flex: 1,
+    flexDirection: 'row',
+    gap: 8,
+    justifyContent: 'center',
+    paddingVertical: 11,
+  },
+  inlineBtnText: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  signOutInlineBtn: {
+    borderColor: colors.border,
+    borderWidth: 1,
+  },
+  signOutInlineText: {
     color: colors.danger,
-    fontSize: 15,
-    fontWeight: '600',
+    fontSize: 14,
+    fontWeight: '700',
   },
   statsRow: {
     flexDirection: 'row',
@@ -289,29 +292,6 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 20,
     fontWeight: '700',
-  },
-  actionList: {
-    gap: 8,
-  },
-  actionBtn: {
-    alignItems: 'center',
-    backgroundColor: colors.surface,
-    borderRadius: radius.sm,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    ...shadow.sm,
-  },
-  actionLeft: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 10,
-  },
-  actionText: {
-    color: colors.text,
-    fontSize: 15,
-    fontWeight: '600',
   },
   recentList: {
     gap: 10,

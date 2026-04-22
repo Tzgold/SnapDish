@@ -33,4 +33,9 @@ export type AnalyzeRecipeRequest = {
 
 export type AnalyzeRecipeResponse = {
   recipe: RecipeResult;
+  meta?: {
+    primaryModel?: string;
+    fallbackModel?: string;
+    preferencesApplied?: boolean;
+  };
 };
