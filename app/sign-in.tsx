@@ -37,6 +37,10 @@ export default function SignInScreen() {
           Alert.alert('Verify your email', 'Please verify your email before signing in.');
           return;
         }
+        if ((error.message ?? '').toLowerCase().includes('credential account not found')) {
+          Alert.alert('Use Google sign in', 'This account was created with Google. Tap Continue with Google.');
+          return;
+        }
         Alert.alert('Sign in', error.message ?? 'Could not sign in.');
         return;
       }
@@ -48,6 +52,30 @@ export default function SignInScreen() {
       router.push('/profile');
     } catch (err) {
       Alert.alert('Sign in', err instanceof Error ? err.message : 'Could not sign in.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onContinueWithGoogle = async () => {
+    setBusy(true);
+    try {
+      const { error } = await authClient.signIn.social({
+        provider: 'google',
+        callbackURL: '/profile',
+      });
+      if (error) {
+        Alert.alert('Google sign in', error.message ?? 'Could not continue with Google.');
+        return;
+      }
+      try {
+        await syncOnboardingPreferences();
+      } catch (syncErr) {
+        console.warn('preferences sync failed', syncErr);
+      }
+      router.push('/profile');
+    } catch (err) {
+      Alert.alert('Google sign in', err instanceof Error ? err.message : 'Could not continue with Google.');
     } finally {
       setBusy(false);
     }
@@ -85,6 +113,15 @@ export default function SignInScreen() {
         />
         <Pressable style={[styles.primaryBtn, busy && styles.primaryBtnDisabled]} onPress={() => void onSignIn()} disabled={busy}>
           <ThemedText style={styles.primaryBtnText}>{busy ? 'Signing in…' : 'Continue'}</ThemedText>
+        </Pressable>
+        <View style={styles.dividerRow}>
+          <View style={styles.divider} />
+          <ThemedText style={styles.dividerText}>or</ThemedText>
+          <View style={styles.divider} />
+        </View>
+        <Pressable style={[styles.googleBtn, busy && styles.primaryBtnDisabled]} onPress={() => void onContinueWithGoogle()} disabled={busy}>
+          <Ionicons name="logo-google" size={18} color={colors.text} />
+          <ThemedText style={styles.googleBtnText}>Continue with Google</ThemedText>
         </Pressable>
         <Pressable onPress={() => router.push('/sign-up')} style={styles.linkRow}>
           <ThemedText style={styles.linkText}>New here? Create an account</ThemedText>
@@ -152,6 +189,38 @@ const styles = StyleSheet.create({
   },
   primaryBtnText: {
     color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  dividerRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.xs,
+    marginTop: spacing.xs,
+  },
+  divider: {
+    backgroundColor: colors.surfaceBorder,
+    flex: 1,
+    height: 1,
+  },
+  dividerText: {
+    color: colors.textTertiary,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  googleBtn: {
+    alignItems: 'center',
+    backgroundColor: colors.surfaceMuted,
+    borderColor: colors.surfaceBorder,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: spacing.xs,
+    justifyContent: 'center',
+    paddingVertical: 14,
+  },
+  googleBtnText: {
+    color: colors.text,
     fontSize: 16,
     fontWeight: '700',
   },
