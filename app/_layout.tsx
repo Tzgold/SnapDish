@@ -27,14 +27,14 @@ export default function RootLayout() {
 
     if (!session) {
       if (!inOnboarding && !inAuth) {
-        router.push('/onboarding');
+        router.replace('/onboarding');
         return;
       }
       return;
     }
 
     if (session && (inAuth || inOnboarding)) {
-      router.push('/profile');
+      router.replace('/profile');
     }
   }, [isPending, router, segments, session]);
 

@@ -33,6 +33,10 @@ export default function SignInScreen() {
     try {
       const { error } = await authClient.signIn.email({ email: e, password });
       if (error) {
+        if ((error as { status?: number }).status === 403) {
+          Alert.alert('Verify your email', 'Please verify your email before signing in.');
+          return;
+        }
         Alert.alert('Sign in', error.message ?? 'Could not sign in.');
         return;
       }

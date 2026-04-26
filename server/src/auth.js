@@ -37,8 +37,26 @@ export const auth = pool
       baseURL: process.env.BETTER_AUTH_URL || 'http://localhost:4000',
       database: pool,
       plugins: [expo()],
+      socialProviders: process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
+        ? {
+            google: {
+              clientId: process.env.GOOGLE_CLIENT_ID,
+              clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+              prompt: 'select_account',
+            },
+          }
+        : undefined,
+      emailVerification: {
+        sendOnSignUp: true,
+        sendOnSignIn: true,
+        autoSignInAfterVerification: true,
+        sendVerificationEmail: async ({ user, url }) => {
+          console.log(`[auth] Verify email for ${user.email}: ${url}`);
+        },
+      },
       emailAndPassword: {
         enabled: true,
+        requireEmailVerification: true,
       },
       trustedOrigins: [
         ...devTrusted,
