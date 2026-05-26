@@ -22,7 +22,11 @@ export default function RootLayout() {
     if (isPending) return;
 
     const current = segments[0];
-    const inAuth = current === 'sign-in' || current === 'sign-up';
+    const inAuth =
+      current === 'sign-in' ||
+      current === 'sign-up' ||
+      current === 'forgot-password' ||
+      current === 'reset-password';
     const inOnboarding = current === 'onboarding';
 
     if (!session) {
@@ -58,6 +62,8 @@ export default function RootLayout() {
         <Stack.Screen name="onboarding" options={{ headerShown: false }} />
         <Stack.Screen name="sign-in" options={{ headerShown: false }} />
         <Stack.Screen name="sign-up" options={{ headerShown: false }} />
+        <Stack.Screen name="forgot-password" options={{ headerShown: false }} />
+        <Stack.Screen name="reset-password" options={{ headerShown: false }} />
         <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
       </Stack>
       <StatusBar style="auto" />

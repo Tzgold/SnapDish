@@ -39,7 +39,34 @@ export default function SignUpScreen() {
         name: n || 'SnapDish cook',
       });
       if (error) {
-        Alert.alert('Sign up', error.message ?? 'Could not create account.');
+        const msg = error.message ?? 'Could not create account.';
+        if (/email not verified|verify your email/i.test(msg)) {
+          Alert.alert(
+            'Verify your email',
+            'This app is not sending verification emails yet. Ask the developer to disable email verification for testing, or use the link printed in the API server logs.',
+          );
+          return;
+        }
+        if (/already exists|already registered/i.test(msg)) {
+          Alert.alert('Account exists', 'That email is already registered. Try Sign in instead.');
+          return;
+        }
+        if (/fetch|network|failed to connect|timeout/i.test(msg)) {
+          Alert.alert(
+            'Cannot reach server',
+            `Check that the API is running and EXPO_PUBLIC_API_URL matches BETTER_AUTH_URL (${msg}).`,
+          );
+          return;
+        }
+        Alert.alert('Sign up', msg);
+        return;
+      }
+      const session = await authClient.getSession();
+      if (!session.data?.session) {
+        Alert.alert(
+          'Almost there',
+          'Account was created but you are not signed in. Try Sign in — if that fails, the API may still require email verification (restart the server after updating server/.env).',
+        );
         return;
       }
       try {

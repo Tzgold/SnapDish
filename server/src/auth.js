@@ -14,7 +14,7 @@ const databaseUrl = process.env.DATABASE_URL?.trim();
 const needsPgSsl =
   process.env.DATABASE_SSL === 'true' ||
   /sslmode=require/i.test(databaseUrl || '') ||
-  /\.supabase\.co/i.test(databaseUrl || '');
+  /\.supabase\.(co|com)/i.test(databaseUrl || '');
 
 /** Shared pool for Better Auth and SnapDish app queries */
 export const pool = databaseUrl
@@ -31,6 +31,10 @@ const devTrusted = [
   'exp://**',
 ];
 
+/** Set BETTER_AUTH_REQUIRE_EMAIL_VERIFICATION=true only when real email (SMTP) is configured. */
+const requireEmailVerification =
+  process.env.BETTER_AUTH_REQUIRE_EMAIL_VERIFICATION === 'true';
+
 export const auth = pool
   ? betterAuth({
       secret: process.env.BETTER_AUTH_SECRET || 'dev-only-change-me',
@@ -46,17 +50,26 @@ export const auth = pool
             },
           }
         : undefined,
-      emailVerification: {
-        sendOnSignUp: true,
-        sendOnSignIn: true,
-        autoSignInAfterVerification: true,
-        sendVerificationEmail: async ({ user, url }) => {
-          console.log(`[auth] Verify email for ${user.email}: ${url}`);
-        },
-      },
+      ...(requireEmailVerification
+        ? {
+            emailVerification: {
+              sendOnSignUp: true,
+              sendOnSignIn: true,
+              autoSignInAfterVerification: true,
+              sendVerificationEmail: async ({ user, url }) => {
+                console.log(`[auth] Verify email for ${user.email}: ${url}`);
+              },
+            },
+          }
+        : {}),
       emailAndPassword: {
         enabled: true,
-        requireEmailVerification: true,
+        requireEmailVerification,
+        async sendResetPassword({ user, url, token }) {
+          console.log(
+            `\n[auth] Password reset for ${user.email}\n  Link: ${url}\n  Token: ${token}\n  (Open this link on the phone, or paste the token into the Reset password screen.)\n`,
+          );
+        },
       },
       trustedOrigins: [
         ...devTrusted,

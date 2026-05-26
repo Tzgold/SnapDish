@@ -1,7 +1,6 @@
 import 'dotenv/config';
 import cors from 'cors';
 import express from 'express';
-import OpenAI from 'openai';
 import { fromNodeHeaders, toNodeHandler } from 'better-auth/node';
 import { z } from 'zod';
 
@@ -11,23 +10,22 @@ import {
   recipeFromDishName,
   recipeFromImage,
 } from './recipe-ai.js';
+import { createLlmClient } from './llm-client.js';
 
 const app = express();
 const port = Number(process.env.PORT) || 4000;
 
-const openaiKey = process.env.OPENAI_API_KEY;
-if (!openaiKey) {
-  console.warn('Warning: OPENAI_API_KEY is not set. POST /api/analyze-recipe will fail.');
+const llm = createLlmClient();
+const { client: openai, apiKey: llmApiKey, provider: llmProvider, models } = llm;
+const { primary: primaryModel, fallback: fallbackModel } = models;
+
+if (!llmApiKey) {
+  console.warn(
+    'Warning: set OPENROUTER_API_KEY (https://openrouter.ai) or OPENAI_API_KEY. POST /api/analyze-recipe will fail.'
+  );
+} else {
+  console.log(`LLM provider: ${llmProvider} (primary: ${primaryModel})`);
 }
-
-const primaryModel = process.env.OPENAI_MODEL_PRIMARY || process.env.OPENAI_MODEL || 'gpt-4o-mini';
-const fallbackModel = process.env.OPENAI_MODEL_FALLBACK || primaryModel;
-const models = { primary: primaryModel, fallback: fallbackModel };
-
-const openai = new OpenAI({
-  apiKey: openaiKey || 'missing',
-  timeout: Number(process.env.OPENAI_TIMEOUT_MS) || 120_000,
-});
 
 app.use(
   cors({
@@ -162,7 +160,8 @@ app.get('/health', (_req, res) => {
 app.get('/health/ready', async (_req, res) => {
   const needsDb = Boolean(process.env.DATABASE_URL);
   const checks = {
-    openai: Boolean(openaiKey),
+    llm: Boolean(llmApiKey),
+    llmProvider,
     database: false,
     auth: Boolean(auth && pool),
   };
@@ -174,7 +173,7 @@ app.get('/health/ready', async (_req, res) => {
   } catch (e) {
     console.error('ready check db', e);
   }
-  const ok = checks.openai && (!needsDb || (checks.database && checks.auth));
+  const ok = checks.llm && (!needsDb || (checks.database && checks.auth));
   res.status(ok ? 200 : 503).json({ ok, checks, needsDatabase: needsDb });
 });
 
@@ -388,8 +387,10 @@ app.post('/api/recipes/:id/cook-session', requireDb, requireSession, async (req,
 
 app.post('/api/analyze-recipe', async (req, res) => {
   try {
-    if (!openaiKey) {
-      return res.status(500).json({ error: 'Server missing OPENAI_API_KEY' });
+    if (!llmApiKey) {
+      return res.status(500).json({
+        error: 'Server missing OPENROUTER_API_KEY or OPENAI_API_KEY',
+      });
     }
 
     const body = AnalyzeBodySchema.parse(req.body);
@@ -419,6 +420,7 @@ app.post('/api/analyze-recipe', async (req, res) => {
     return res.json({
       recipe,
       meta: {
+        provider: llmProvider,
         primaryModel,
         fallbackModel,
         preferencesApplied: Boolean(preferences),
@@ -439,6 +441,12 @@ app.listen(port, '0.0.0.0', async () => {
     await ensureSnapdishTables();
   } catch (e) {
     console.error('ensureSnapdishTables failed', e);
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/tenant\/user.*not found/i.test(msg)) {
+      console.error(
+        'Supabase DB: project may be paused or DATABASE_URL is wrong. Dashboard → Project Settings → Database → copy the Session pooler URI (port 5432) and replace DATABASE_URL.'
+      );
+    }
   }
   console.log(`SnapDish API listening on http://0.0.0.0:${port} (reachable from your LAN at http://<this-pc-ip>:${port})`);
 });
