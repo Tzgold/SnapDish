@@ -27,6 +27,8 @@ export type RecipeResult = {
 /** Send a dish name, a food photo (base64), or both. At least one must be set. */
 export type AnalyzeRecipeRequest = {
   dishName?: string;
+  /** How the user wants to cook (e.g. air fryer, one-pan, meal prep). */
+  cookingStyle?: string;
   imageBase64?: string;
   imageMimeType?: string;
 };

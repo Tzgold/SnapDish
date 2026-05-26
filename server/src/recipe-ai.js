@@ -30,6 +30,7 @@ export const RecipeResultSchema = z.object({
 export const AnalyzeBodySchema = z
   .object({
     dishName: z.string().optional(),
+    cookingStyle: z.string().optional(),
     imageBase64: z.string().optional(),
     imageMimeType: z.string().optional(),
   })
@@ -48,14 +49,18 @@ The JSON must match this shape:
   "prepTimeMinutes": number,
   "cookTimeMinutes": number,
   "totalTimeMinutes": number,
-  "calories": number (rough estimate),
+  "calories": number (total kcal for ALL servings listed, not per serving),
   "rating": number between 1 and 5 (quality of the recipe as written),
   "confidenceScore": number between 0 and 1 (how well this matches the user's request),
   "ingredients": [{ "name": string, "quantity": string, "optional": boolean optional }],
   "steps": [{ "order": number starting at 1, "instruction": string, "durationMinutes": number optional }],
   "notes": string[] (tips, substitutions, or caveats)
 }
-Ensure totalTimeMinutes is close to prepTimeMinutes + cookTimeMinutes. Steps must be ordered and practical.`;
+Ensure totalTimeMinutes equals prepTimeMinutes + cookTimeMinutes (not a separate estimate).
+Ingredient quantities must match the servings count (e.g. 4 servings → amounts for 4 people).
+List realistic prepTimeMinutes (chopping, marinating) and cookTimeMinutes (active heat: boil, sauté, bake, simmer) separately.
+Times should match real techniques — e.g. boiling pasta is ~8–12 min whether servings are 2 or 4; do not inflate cook time just because servings are higher.
+Steps must be ordered, practical, and grouped logically: prep/mise steps first, then cook steps, then finish/serve. Use clear action verbs. durationMinutes on cook steps should sum roughly to cookTimeMinutes when possible.`;
 
 function stripJsonFromContent(raw) {
   let text = raw.trim();
@@ -130,6 +135,30 @@ export function buildPreferenceInstructions(prefs) {
   return `\n\n${lines.join('\n')}`;
 }
 
+function buildUserContextBlock({ dishName, cookingStyle, hasImage }) {
+  const lines = [];
+  const name = typeof dishName === 'string' ? dishName.trim() : '';
+  const style = typeof cookingStyle === 'string' ? cookingStyle.trim() : '';
+
+  if (hasImage && name) {
+    lines.push(`The user uploaded a food photo and says it is or should be like: "${name}". Use both the image and this label.`);
+  } else if (hasImage && !name) {
+    lines.push(
+      'The user uploaded a food photo without a dish name. Identify the food from the image; if unsure, pick the most likely dish and lower confidenceScore.'
+    );
+  } else if (name) {
+    lines.push(`The user wants a recipe for: "${name}".`);
+  }
+
+  if (style) {
+    lines.push(
+      `Cooking preference (follow this for method, equipment, and step structure): "${style}". Adapt techniques, timing, and step order to match — e.g. air fryer vs stovetop vs oven.`
+    );
+  }
+
+  return lines.length ? `${lines.join('\n')}\n\n` : '';
+}
+
 async function withPrimaryFallback(openai, primaryModel, fallbackModel, temperature, getMessages) {
   const tryModel = async (model) => {
     const messages = await getMessages();
@@ -166,11 +195,10 @@ async function withPrimaryFallback(openai, primaryModel, fallbackModel, temperat
  * @param {OpenAI} openai
  * @param {{ primary: string; fallback: string }} models
  */
-export async function recipeFromDishName(openai, models, dishName, preferences) {
+export async function recipeFromDishName(openai, models, dishName, cookingStyle, preferences) {
   const prefBlock = buildPreferenceInstructions(preferences);
-  const user = `The user wants a complete, cookable recipe for this dish or idea: "${dishName}".
-
-You do not have live web access. Use your knowledge as if you summarized trustworthy recipes from major cooking sites and classic techniques. Prefer widely recognized versions of the dish. If the name is vague, choose the most common interpretation and explain briefly in notes.
+  const context = buildUserContextBlock({ dishName, cookingStyle, hasImage: false });
+  const user = `${context}You do not have live web access. Use your knowledge as if you summarized trustworthy recipes from major cooking sites and classic techniques. Prefer widely recognized versions of the dish. If the name is vague, choose the most common interpretation and explain briefly in notes.
 ${prefBlock}
 
 Return JSON only.`;
@@ -185,19 +213,18 @@ Return JSON only.`;
  * @param {OpenAI} openai
  * @param {{ primary: string; fallback: string }} models
  */
-export async function recipeFromImage(openai, models, base64, mimeType, dishHint, preferences) {
+export async function recipeFromImage(openai, models, base64, mimeType, dishHint, cookingStyle, preferences) {
   const mime = mimeType && mimeType.startsWith('image/') ? mimeType : 'image/jpeg';
   const dataUrl = `data:${mime};base64,${base64}`;
 
-  const hint = dishHint
-    ? `The user says this is or should be like: "${dishHint}". Use the photo and this hint together.`
-    : 'Identify the dish from the photo if you can.';
-
   const prefBlock = buildPreferenceInstructions(preferences);
+  const context = buildUserContextBlock({
+    dishName: dishHint,
+    cookingStyle,
+    hasImage: true,
+  });
 
-  const userText = `${hint}
-
-Produce a complete recipe: title, servings, prep/cook/total times, estimated calories, ingredients with quantities, and numbered steps with optional per-step durationMinutes. If the image is unclear, lower confidenceScore and say so in notes.
+  const userText = `${context}Produce a complete recipe: title, servings, realistic prep/cook/total times, estimated calories (total for all servings), ingredients with quantities, and numbered steps grouped prep → cook → serve. Add durationMinutes on cook steps when helpful. If the image is unclear, lower confidenceScore and say so in notes.
 ${prefBlock}`;
 
   return withPrimaryFallback(openai, models.primary, models.fallback, 0.4, async () => [

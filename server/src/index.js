@@ -395,6 +395,8 @@ app.post('/api/analyze-recipe', async (req, res) => {
 
     const body = AnalyzeBodySchema.parse(req.body);
     const name = typeof body.dishName === 'string' ? body.dishName.trim() : '';
+    const cookingStyle =
+      typeof body.cookingStyle === 'string' ? body.cookingStyle.trim() : '';
     const hasName = name.length > 0;
     const cleanB64 = body.imageBase64
       ? body.imageBase64.replace(/^data:image\/\w+;base64,/, '').trim()
@@ -409,12 +411,18 @@ app.post('/api/analyze-recipe', async (req, res) => {
     }
 
     let recipe;
-    if (hasImage && hasName) {
-      recipe = await recipeFromImage(openai, models, cleanB64, body.imageMimeType, name, preferences);
-    } else if (hasImage) {
-      recipe = await recipeFromImage(openai, models, cleanB64, body.imageMimeType, '', preferences);
+    if (hasImage) {
+      recipe = await recipeFromImage(
+        openai,
+        models,
+        cleanB64,
+        body.imageMimeType,
+        hasName ? name : '',
+        cookingStyle,
+        preferences
+      );
     } else {
-      recipe = await recipeFromDishName(openai, models, name, preferences);
+      recipe = await recipeFromDishName(openai, models, name, cookingStyle, preferences);
     }
 
     return res.json({

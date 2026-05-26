@@ -21,6 +21,7 @@ import { ThemedText } from '@/components/themed-text';
 import { authClient } from '@/src/lib/auth-client';
 import { colors, radius, shadow, spacing, typography } from '@/src/theme/snapdish';
 import { analyzeRecipe } from '@/src/services/analyze';
+import { setRecipeHeroImage } from '@/src/state/recipe-hero-image';
 import type { AnalyzeRecipeRequest } from '@/src/types/recipe';
 
 type TrendingRecipe = {
@@ -37,6 +38,15 @@ type PickedImage = {
 
 const SUGGESTIONS = ['Chicken tikka masala', 'Banana bread', 'Greek salad', 'Beef tacos'];
 
+const COOK_STYLE_SUGGESTIONS = [
+  'Quick weeknight',
+  'One-pan stovetop',
+  'Oven-baked',
+  'Air fryer',
+  'Slow cooker',
+  'Meal prep',
+];
+
 export default function HomeScreen() {
   const router = useRouter();
   const { data: session } = authClient.useSession();
@@ -44,6 +54,7 @@ export default function HomeScreen() {
   const isSmall = width < 360;
   const isLarge = width >= 430;
   const [dishName, setDishName] = useState('');
+  const [cookingStyle, setCookingStyle] = useState('');
   const [pendingImage, setPendingImage] = useState<PickedImage | null>(null);
   const [statusMessage, setStatusMessage] = useState(
     'Type a dish or add a photo — we’ll build a full recipe for you.'
@@ -143,12 +154,17 @@ export default function HomeScreen() {
     if (busy || !canSubmit) return;
 
     const name = dishName.trim();
+    const style = cookingStyle.trim();
     const label =
       name && pendingImage
-        ? `Looking up “${name}” and your photo…`
-        : name
-          ? `Finding a trusted-style recipe for “${name}”…`
-          : 'Reading your food photo…';
+        ? `Matching “${name}” to your photo…`
+        : pendingImage
+          ? style
+            ? 'Reading your photo and cooking style…'
+            : 'Reading your food photo…'
+          : style
+            ? `Building “${name}” (${style})…`
+            : `Finding a trusted-style recipe for “${name}”…`;
 
     setAnalysisLabel(label);
     setBusy(true);
@@ -157,6 +173,7 @@ export default function HomeScreen() {
     try {
       const payload: AnalyzeRecipeRequest = {};
       if (name) payload.dishName = name;
+      if (style) payload.cookingStyle = style;
       if (pendingImage) {
         payload.imageBase64 = pendingImage.base64;
         payload.imageMimeType = pendingImage.mimeType;
@@ -164,8 +181,18 @@ export default function HomeScreen() {
 
       const { recipe, meta } = await analyzeRecipe(payload);
 
-      const sourceBits = [name ? `"${name}"` : null, pendingImage ? 'photo' : null].filter(Boolean);
+      const sourceBits = [
+        name ? `"${name}"` : null,
+        style ? style : null,
+        pendingImage ? 'photo' : null,
+      ].filter(Boolean);
       const source = sourceBits.length ? sourceBits.join(' + ') : 'SnapDish';
+
+      if (pendingImage) {
+        setRecipeHeroImage(`data:${pendingImage.mimeType};base64,${pendingImage.base64}`);
+      } else {
+        setRecipeHeroImage(null);
+      }
 
       router.push({
         pathname: '/recipe-result',
@@ -226,13 +253,22 @@ export default function HomeScreen() {
           <ThemedText style={styles.brandLine}>SnapDish</ThemedText>
           <ThemedText style={[styles.heroTitle, { fontSize: isSmall ? 22 : isLarge ? 30 : 26 }]}>What are we cooking?</ThemedText>
           <ThemedText style={[styles.heroSub, { fontSize: isSmall ? typography.caption + 1 : typography.bodySm }]}>
-            Name a dish and we’ll pull together a clear recipe — or snap a photo (or both).
+            Name a dish, add a photo, or both. Optional details help the AI match your food and how you like to cook.
           </ThemedText>
 
           <View style={styles.inputShell}>
-            <Ionicons name="search" size={20} color={colors.textTertiary} style={styles.inputIcon} />
+            <Ionicons
+              name={pendingImage ? 'restaurant-outline' : 'search'}
+              size={20}
+              color={colors.textTertiary}
+              style={styles.inputIcon}
+            />
             <TextInput
-              placeholder='e.g. "pad thai", "sourdough bread"'
+              placeholder={
+                pendingImage
+                  ? 'What’s in the photo? e.g. rigatoni with peas & tomato'
+                  : 'Dish name — e.g. pad thai, banana bread'
+              }
               placeholderTextColor={colors.textTertiary}
               value={dishName}
               onChangeText={setDishName}
@@ -266,20 +302,58 @@ export default function HomeScreen() {
           </View>
 
           {pendingImage ? (
-            <View style={styles.previewRow}>
-              <ThemedText style={styles.previewLabel}>Your photo</ThemedText>
-              <View style={styles.previewBox}>
-                <Image
-                  source={{ uri: `data:${pendingImage.mimeType};base64,${pendingImage.base64}` }}
-                  style={styles.previewImage}
-                  contentFit="cover"
-                />
-                <Pressable style={styles.clearPhoto} onPress={() => setPendingImage(null)}>
-                  <Ionicons name="close" size={18} color="#FFF" />
-                </Pressable>
+            <View style={styles.photoOptionalCard}>
+              <View style={styles.photoOptionalTop}>
+                <View style={styles.previewBox}>
+                  <Image
+                    source={{ uri: `data:${pendingImage.mimeType};base64,${pendingImage.base64}` }}
+                    style={styles.previewImage}
+                    contentFit="cover"
+                  />
+                  <Pressable style={styles.clearPhoto} onPress={() => setPendingImage(null)}>
+                    <Ionicons name="close" size={18} color="#FFF" />
+                  </Pressable>
+                </View>
+                <View style={styles.photoOptionalCopy}>
+                  <ThemedText style={styles.optionalBadge}>Optional</ThemedText>
+                  <ThemedText style={styles.photoOptionalTitle}>Help the AI read your photo</ThemedText>
+                  <ThemedText style={styles.photoOptionalHint}>
+                    Name what you see above, then say how you want to cook — clearer steps and better timing.
+                  </ThemedText>
+                </View>
               </View>
             </View>
           ) : null}
+
+          <View style={styles.optionalSection}>
+            <ThemedText style={styles.optionalSectionLabel}>
+              {pendingImage ? 'How do you want to cook? (optional)' : 'Cooking style (optional)'}
+            </ThemedText>
+            <View style={styles.inputShell}>
+              <Ionicons name="flame-outline" size={20} color={colors.textTertiary} style={styles.inputIcon} />
+              <TextInput
+                placeholder="e.g. one-pan on stovetop, air fryer, 30 min max"
+                placeholderTextColor={colors.textTertiary}
+                value={cookingStyle}
+                onChangeText={setCookingStyle}
+                style={[styles.mainInput, { fontSize: isSmall ? 15 : 16 }]}
+                autoCorrect
+                returnKeyType="done"
+              />
+            </View>
+            <View style={styles.suggestionRow}>
+              {COOK_STYLE_SUGGESTIONS.map((s) => (
+                <Pressable
+                  key={s}
+                  style={[styles.suggestionChip, cookingStyle === s && styles.suggestionChipActive]}
+                  onPress={() => setCookingStyle(s)}>
+                  <ThemedText style={[styles.suggestionText, cookingStyle === s && styles.suggestionTextActive]}>
+                    {s}
+                  </ThemedText>
+                </Pressable>
+              ))}
+            </View>
+          </View>
 
           <Pressable
             style={[styles.primaryCta, isGenerateDisabled && styles.primaryCtaDisabled]}
@@ -461,11 +535,65 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
   },
+  suggestionChipActive: {
+    backgroundColor: colors.text,
+  },
   suggestionText: {
     color: colors.text,
     fontSize: 13,
     fontWeight: '500',
     opacity: 0.85,
+  },
+  suggestionTextActive: {
+    color: '#FFFFFF',
+    opacity: 1,
+  },
+  optionalSection: {
+    gap: 8,
+    marginTop: 14,
+  },
+  optionalSectionLabel: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  photoOptionalCard: {
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: radius.md,
+    marginTop: 14,
+    padding: 12,
+  },
+  photoOptionalTop: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  photoOptionalCopy: {
+    flex: 1,
+    gap: 4,
+    minWidth: 0,
+  },
+  optionalBadge: {
+    alignSelf: 'flex-start',
+    backgroundColor: colors.surface,
+    borderRadius: 6,
+    color: colors.textSecondary,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+    overflow: 'hidden',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    textTransform: 'uppercase',
+  },
+  photoOptionalTitle: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  photoOptionalHint: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    lineHeight: 17,
   },
   photoRow: {
     flexDirection: 'row',
@@ -495,23 +623,15 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
   },
-  previewRow: {
-    marginTop: 14,
-  },
-  previewLabel: {
-    color: colors.textSecondary,
-    fontSize: 13,
-    marginBottom: 8,
-  },
   previewBox: {
-    alignSelf: 'flex-start',
     borderRadius: radius.sm,
+    flexShrink: 0,
     overflow: 'hidden',
     position: 'relative',
   },
   previewImage: {
-    height: 100,
-    width: 100,
+    height: 88,
+    width: 88,
   },
   clearPhoto: {
     alignItems: 'center',

@@ -10,8 +10,13 @@ import { ThemedText } from '@/components/themed-text';
 import { authClient } from '@/src/lib/auth-client';
 import { getMockRecipeResponse } from '@/src/services/analyze';
 import { apiFetch } from '@/src/services/http';
+import { getRecipeHeroImage } from '@/src/state/recipe-hero-image';
 import { RecipeResult } from '@/src/types/recipe';
 import { colors, radius, shadow, spacing, typography } from '@/src/theme/snapdish';
+import {
+  estimateSelectedCalories,
+  scaleRecipeForServings,
+} from '@/src/utils/recipe-scale';
 
 type TabKey = 'ingredients' | 'directions';
 
@@ -50,12 +55,16 @@ function ingredientKeywords(name: string) {
 }
 
 function computeCookableSteps(r: RecipeResult, checked: Set<string>) {
-  const missingIngredients = r.ingredients.filter((item) => !checked.has(`${item.name}-${item.quantity}`));
+  const missingIngredients = r.ingredients.filter((item) => !checked.has(item.name));
   const missingKw = [...new Set(missingIngredients.flatMap((item) => ingredientKeywords(item.name)))];
   return r.steps.filter((step) => {
     const text = step.instruction.toLowerCase();
     return !missingKw.some((word) => text.includes(word));
   });
+}
+
+function ingredientKey(item: { name: string }) {
+  return item.name;
 }
 
 export default function RecipeResultScreen() {
@@ -73,7 +82,7 @@ export default function RecipeResultScreen() {
   const [remoteRecipeId, setRemoteRecipeId] = useState<string | null>(null);
   const [cloudBusy, setCloudBusy] = useState(false);
 
-  const recipe = useMemo<RecipeResult>(() => {
+  const baseRecipe = useMemo<RecipeResult>(() => {
     if (!params.recipe) return getMockRecipeResponse().recipe;
     try {
       return JSON.parse(params.recipe) as RecipeResult;
@@ -82,6 +91,19 @@ export default function RecipeResultScreen() {
     }
   }, [params.recipe]);
 
+  const source = typeof params.source === 'string' ? params.source : 'AI recipe';
+  const preferencesApplied = params.preferencesApplied === '1';
+  const baseServings = Math.max(1, baseRecipe.servings);
+  const displayServings = servingsOverride ?? baseServings;
+  const recipe = useMemo(
+    () => scaleRecipeForServings(baseRecipe, displayServings),
+    [baseRecipe, displayServings]
+  );
+  const heroImageUri = getRecipeHeroImage() ?? HERO_IMAGE;
+
+  const totalCalories = recipe.calories ?? Math.round(420 * (displayServings / baseServings));
+  const caloriesPerServing = Math.round(totalCalories / displayServings);
+
   useEffect(() => {
     setServingsOverride(null);
     setCheckedIngredients(new Set());
@@ -89,24 +111,19 @@ export default function RecipeResultScreen() {
     setPlanReady(false);
     setRemoteRecipeId(null);
     setActiveTab('ingredients');
-  }, [recipe.recipeTitle]);
+  }, [baseRecipe.recipeTitle]);
 
-  const source = typeof params.source === 'string' ? params.source : 'AI recipe';
-  const preferencesApplied = params.preferencesApplied === '1';
-  const displayServings = servingsOverride ?? recipe.servings;
+  useEffect(() => {
+    setPlanReady(false);
+  }, [displayServings]);
+
   const selectedCount = checkedIngredients.size;
   const totalIngredientCount = recipe.ingredients.length;
-  const selectedRatio = totalIngredientCount > 0 ? selectedCount / totalIngredientCount : 0;
-  const selectedCalories = Math.round((recipe.calories ?? 420) * selectedRatio);
-  const missingIngredients = recipe.ingredients.filter((item) => !checkedIngredients.has(`${item.name}-${item.quantity}`));
-  const missingKeywords = useMemo(
-    () => [...new Set(missingIngredients.flatMap((item) => ingredientKeywords(item.name)))],
-    [missingIngredients]
+  const selectedCalories = estimateSelectedCalories(recipe.ingredients, checkedIngredients, totalCalories);
+  const cookableSteps = useMemo(
+    () => computeCookableSteps(recipe, checkedIngredients),
+    [recipe, checkedIngredients]
   );
-  const cookableSteps = recipe.steps.filter((step) => {
-    const text = step.instruction.toLowerCase();
-    return !missingKeywords.some((word) => text.includes(word));
-  });
 
   const toggleIngredient = (key: string) => {
     setCheckedIngredients((prev) => {
@@ -139,10 +156,7 @@ export default function RecipeResultScreen() {
           id = data.id;
           setRemoteRecipeId(id);
         }
-        const estCal =
-          totalIngredientCount > 0
-            ? Math.round((recipe.calories ?? 420) * (checkedIngredients.size / totalIngredientCount))
-            : selectedCalories;
+        const estCal = selectedCalories;
         const stepsForPlan = computeCookableSteps(recipe, checkedIngredients);
         await apiFetch(`/api/recipes/${id}/pantry`, {
           method: 'POST',
@@ -186,7 +200,7 @@ export default function RecipeResultScreen() {
     <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
       <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
         <View style={styles.heroWrap}>
-          <Image source={HERO_IMAGE} style={styles.heroImage} contentFit="cover" />
+          <Image source={heroImageUri} style={styles.heroImage} contentFit="cover" />
           <LinearGradient
             colors={['transparent', 'rgba(28,28,30,0.15)', 'rgba(28,28,30,0.88)']}
             locations={[0, 0.45, 1]}
@@ -259,8 +273,8 @@ export default function RecipeResultScreen() {
               iconColor={colors.statPrepIcon}
             />
             <StatBox
-              label="Calories"
-              value={`${planReady ? selectedCalories : recipe.calories ?? '—'}`}
+              label={planReady ? 'Your picks' : 'Per serving'}
+              value={planReady ? `${selectedCalories}` : `${caloriesPerServing}`}
               icon="flame-outline"
               bg={colors.statCook}
               iconColor={colors.statCookIcon}
@@ -274,34 +288,82 @@ export default function RecipeResultScreen() {
             />
           </View>
 
-          <View style={styles.servingsRow}>
-            <ThemedText style={styles.servingsLabel}>Adjust servings</ThemedText>
-            <View style={styles.stepper}>
-              <Pressable
-                style={[styles.stepperBtn, displayServings <= 1 && styles.stepperBtnDisabled]}
-                onPress={() => setServingsOverride(Math.max(1, displayServings - 1))}
-                disabled={displayServings <= 1}>
-                <Ionicons name="remove" size={18} color={displayServings <= 1 ? colors.textTertiary : colors.text} />
-              </Pressable>
-              <ThemedText style={styles.stepperValue}>{displayServings}</ThemedText>
-              <Pressable style={styles.stepperBtn} onPress={() => setServingsOverride(displayServings + 1)}>
-                <Ionicons name="add" size={18} color={colors.text} />
-              </Pressable>
+          <View style={styles.servingsCard}>
+            <View style={styles.servingsHeader}>
+              <ThemedText lightColor={colors.text} darkColor={colors.text} style={styles.servingsLabel}>
+                Servings
+              </ThemedText>
+              <View style={styles.stepper}>
+                <Pressable
+                  style={[styles.stepperBtn, displayServings <= 1 && styles.stepperBtnDisabled]}
+                  onPress={() => setServingsOverride(Math.max(1, displayServings - 1))}
+                  disabled={displayServings <= 1}
+                  accessibilityRole="button"
+                  accessibilityLabel="Decrease servings">
+                  <Ionicons name="remove" size={18} color={displayServings <= 1 ? colors.textTertiary : colors.text} />
+                </Pressable>
+                <ThemedText style={styles.stepperValue}>{displayServings}</ThemedText>
+                <Pressable
+                  style={styles.stepperBtn}
+                  onPress={() => setServingsOverride(displayServings + 1)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Increase servings">
+                  <Ionicons name="add" size={18} color={colors.text} />
+                </Pressable>
+              </View>
             </View>
+            <ThemedText lightColor={colors.textSecondary} darkColor={colors.textSecondary} style={styles.servingsHint}>
+              Ingredient amounts and calories scale with servings · prep & cook times stay the same · {totalCalories} kcal total
+            </ThemedText>
           </View>
 
           <View style={styles.selectionCard}>
-            <ThemedText style={styles.selectionTitle}>What ingredients do you have?</ThemedText>
-            <ThemedText style={styles.selectionSub}>
-              Select what is available. We will estimate calories and adapt cooking steps for what you selected.
+            <ThemedText lightColor={colors.text} darkColor={colors.text} style={styles.selectionTitle}>
+              What ingredients do you have?
+            </ThemedText>
+            <ThemedText lightColor={colors.textSecondary} darkColor={colors.textSecondary} style={styles.selectionSub}>
+              Tap what you have on hand. We estimate calories and tailor steps to your picks.
             </ThemedText>
             <View style={styles.selectionStats}>
-              <ThemedText style={styles.selectionStatText}>
-                {selectedCount}/{totalIngredientCount} selected
-              </ThemedText>
-              <ThemedText style={styles.selectionStatText}>
-                Est. calories: {selectedCalories}
-              </ThemedText>
+              <View style={styles.selectionStatChip}>
+                <View style={styles.selectionStatIcon}>
+                  <Ionicons name="checkmark-circle-outline" size={18} color={colors.statCalIcon} />
+                </View>
+                <View style={styles.selectionStatBody}>
+                  <ThemedText lightColor={colors.textSecondary} darkColor={colors.textSecondary} style={styles.selectionStatLabel}>
+                    Selected
+                  </ThemedText>
+                  <ThemedText lightColor={colors.text} darkColor={colors.text} style={styles.selectionStatValue}>
+                    {selectedCount} of {totalIngredientCount} ingredients
+                  </ThemedText>
+                </View>
+              </View>
+              <View style={styles.selectionStatChip}>
+                <View style={styles.selectionStatIcon}>
+                  <Ionicons name="flame-outline" size={18} color={colors.statCookIcon} />
+                </View>
+                <View style={styles.selectionStatBody}>
+                  <ThemedText lightColor={colors.textSecondary} darkColor={colors.textSecondary} style={styles.selectionStatLabel}>
+                    Your picks
+                  </ThemedText>
+                  <ThemedText lightColor={colors.text} darkColor={colors.text} style={styles.selectionStatValue}>
+                    About {selectedCalories} kcal
+                  </ThemedText>
+                </View>
+              </View>
+              <View style={styles.selectionStatChip}>
+                <View style={styles.selectionStatIcon}>
+                  <Ionicons name="restaurant-outline" size={18} color={colors.textSecondary} />
+                </View>
+                <View style={styles.selectionStatBody}>
+                  <ThemedText lightColor={colors.textSecondary} darkColor={colors.textSecondary} style={styles.selectionStatLabel}>
+                    Full recipe
+                  </ThemedText>
+                  <ThemedText lightColor={colors.text} darkColor={colors.text} style={styles.selectionStatValue}>
+                    {totalCalories} kcal total · {caloriesPerServing} kcal per serving
+                  </ThemedText>
+                </View>
+              </View>
             </View>
             <Pressable
               style={[styles.planBtn, (selectedCount === 0 || cloudBusy) && styles.planBtnDisabled]}
@@ -330,7 +392,7 @@ export default function RecipeResultScreen() {
           {activeTab === 'ingredients' ? (
             <View style={styles.listWrap}>
               {recipe.ingredients.map((item) => {
-                const key = `${item.name}-${item.quantity}`;
+                const key = ingredientKey(item);
                 const checked = checkedIngredients.has(key);
                 return (
                   <Pressable
@@ -597,25 +659,43 @@ const styles = StyleSheet.create({
     fontSize: 11,
     marginTop: 2,
   },
-  servingsRow: {
-    alignItems: 'center',
+  servingsCard: {
     backgroundColor: colors.surfaceMuted,
+    borderColor: colors.border,
     borderRadius: radius.md,
+    borderWidth: 1,
+    gap: 10,
+    overflow: 'hidden',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    width: '100%',
+  },
+  servingsHeader: {
+    alignItems: 'center',
     flexDirection: 'row',
     justifyContent: 'space-between',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    width: '100%',
   },
   servingsLabel: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  servingsHint: {
     color: colors.textSecondary,
-    fontSize: 14,
-    fontWeight: '600',
+    fontSize: 13,
+    lineHeight: 18,
+    width: '100%',
   },
   selectionCard: {
     backgroundColor: colors.surfaceMuted,
+    borderColor: colors.border,
     borderRadius: radius.md,
-    gap: 8,
+    borderWidth: 1,
+    gap: 10,
+    overflow: 'hidden',
     padding: 12,
+    width: '100%',
   },
   selectionTitle: {
     color: colors.text,
@@ -628,13 +708,40 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   selectionStats: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+    flexDirection: 'column',
+    gap: 8,
+    width: '100%',
   },
-  selectionStatText: {
+  selectionStatChip: {
+    alignItems: 'flex-start',
+    backgroundColor: colors.surface,
+    borderRadius: radius.sm,
+    flexDirection: 'row',
+    gap: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    width: '100%',
+  },
+  selectionStatIcon: {
+    marginTop: 2,
+  },
+  selectionStatBody: {
+    flex: 1,
+    gap: 2,
+    minWidth: 0,
+  },
+  selectionStatLabel: {
     color: colors.textSecondary,
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
+  },
+  selectionStatValue: {
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: '600',
+    lineHeight: 18,
   },
   planBtn: {
     alignItems: 'center',
@@ -657,15 +764,18 @@ const styles = StyleSheet.create({
   stepper: {
     alignItems: 'center',
     flexDirection: 'row',
+    flexShrink: 0,
     gap: 4,
   },
   stepperBtn: {
     alignItems: 'center',
     backgroundColor: colors.surface,
+    borderColor: colors.border,
     borderRadius: 12,
-    height: 36,
+    borderWidth: 1,
+    height: 40,
     justifyContent: 'center',
-    width: 36,
+    width: 40,
     ...shadow.sm,
   },
   stepperBtnDisabled: {
