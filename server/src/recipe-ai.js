@@ -30,6 +30,7 @@ export const RecipeResultSchema = z.object({
 export const AnalyzeBodySchema = z
   .object({
     dishName: z.string().optional(),
+    recipeDetails: z.string().optional(),
     cookingStyle: z.string().optional(),
     imageBase64: z.string().optional(),
     imageMimeType: z.string().optional(),
@@ -135,13 +136,16 @@ export function buildPreferenceInstructions(prefs) {
   return `\n\n${lines.join('\n')}`;
 }
 
-function buildUserContextBlock({ dishName, cookingStyle, hasImage }) {
+function buildUserContextBlock({ dishName, recipeDetails, cookingStyle, hasImage }) {
   const lines = [];
   const name = typeof dishName === 'string' ? dishName.trim() : '';
+  const details = typeof recipeDetails === 'string' ? recipeDetails.trim() : '';
   const style = typeof cookingStyle === 'string' ? cookingStyle.trim() : '';
 
   if (hasImage && name) {
-    lines.push(`The user uploaded a food photo and says it is or should be like: "${name}". Use both the image and this label.`);
+    lines.push(
+      `The user uploaded a food photo and named it: "${name}". Treat the name and image together as the target dish.`
+    );
   } else if (hasImage && !name) {
     lines.push(
       'The user uploaded a food photo without a dish name. Identify the food from the image; if unsure, pick the most likely dish and lower confidenceScore.'
@@ -150,9 +154,15 @@ function buildUserContextBlock({ dishName, cookingStyle, hasImage }) {
     lines.push(`The user wants a recipe for: "${name}".`);
   }
 
+  if (details) {
+    lines.push(
+      `User description (follow closely — ingredients they have, what they see, spice level, texture, substitutions, dietary tweaks): "${details}"`
+    );
+  }
+
   if (style) {
     lines.push(
-      `Cooking preference (follow this for method, equipment, and step structure): "${style}". Adapt techniques, timing, and step order to match — e.g. air fryer vs stovetop vs oven.`
+      `How they want to cook (method, equipment, step structure): "${style}". Adapt techniques, timing, and step order to match.`
     );
   }
 
@@ -195,9 +205,9 @@ async function withPrimaryFallback(openai, primaryModel, fallbackModel, temperat
  * @param {OpenAI} openai
  * @param {{ primary: string; fallback: string }} models
  */
-export async function recipeFromDishName(openai, models, dishName, cookingStyle, preferences) {
+export async function recipeFromDishName(openai, models, dishName, recipeDetails, cookingStyle, preferences) {
   const prefBlock = buildPreferenceInstructions(preferences);
-  const context = buildUserContextBlock({ dishName, cookingStyle, hasImage: false });
+  const context = buildUserContextBlock({ dishName, recipeDetails, cookingStyle, hasImage: false });
   const user = `${context}You do not have live web access. Use your knowledge as if you summarized trustworthy recipes from major cooking sites and classic techniques. Prefer widely recognized versions of the dish. If the name is vague, choose the most common interpretation and explain briefly in notes.
 ${prefBlock}
 
@@ -213,13 +223,23 @@ Return JSON only.`;
  * @param {OpenAI} openai
  * @param {{ primary: string; fallback: string }} models
  */
-export async function recipeFromImage(openai, models, base64, mimeType, dishHint, cookingStyle, preferences) {
+export async function recipeFromImage(
+  openai,
+  models,
+  base64,
+  mimeType,
+  dishHint,
+  recipeDetails,
+  cookingStyle,
+  preferences
+) {
   const mime = mimeType && mimeType.startsWith('image/') ? mimeType : 'image/jpeg';
   const dataUrl = `data:${mime};base64,${base64}`;
 
   const prefBlock = buildPreferenceInstructions(preferences);
   const context = buildUserContextBlock({
     dishName: dishHint,
+    recipeDetails,
     cookingStyle,
     hasImage: true,
   });
