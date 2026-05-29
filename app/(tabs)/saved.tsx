@@ -1,9 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
-import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Alert,
+  ActivityIndicator,
   FlatList,
   Pressable,
   StyleSheet,
@@ -14,134 +13,167 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
-import { getMockRecipeResponse } from '@/src/services/analyze';
+import { authClient } from '@/src/lib/auth-client';
+import { fetchMyRecipes, unbookmarkRecipe, type SavedRecipeItem } from '@/src/services/recipes';
 import { colors, radius, shadow, typography } from '@/src/theme/snapdish';
 
-type SavedRecipe = {
-  id: string;
-  title: string;
-  image: string;
-  time: string;
-  savedAt: string;
-};
-
-const MOCK_SAVED: SavedRecipe[] = [
-  {
-    id: 's1',
-    title: 'Creamy Garlic Pasta',
-    image:
-      'https://images.unsplash.com/photo-1473093295043-cdd812d0e601?auto=format&fit=crop&w=600&q=80',
-    time: '25 min',
-    savedAt: '2 days ago',
-  },
-  {
-    id: 's2',
-    title: 'Honey Glazed Salmon',
-    image:
-      'https://images.unsplash.com/photo-1467003909585-2f8a72700288?auto=format&fit=crop&w=600&q=80',
-    time: '22 min',
-    savedAt: '1 week ago',
-  },
-  {
-    id: 's3',
-    title: 'Veggie Buddha Bowl',
-    image:
-      'https://images.unsplash.com/photo-1512621776951-a57141f2eefd?auto=format&fit=crop&w=600&q=80',
-    time: '18 min',
-    savedAt: '2 weeks ago',
-  },
-];
+function timeAgo(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const min = Math.floor(diff / 60000);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const days = Math.floor(hr / 24);
+  if (days < 7) return `${days}d ago`;
+  return `${Math.floor(days / 7)}w ago`;
+}
 
 export default function SavedScreen() {
   const router = useRouter();
+  const { data: session } = authClient.useSession();
   const { width } = useWindowDimensions();
   const isSmall = width < 360;
   const horizontalPadding = isSmall ? 14 : width >= 430 ? 24 : 20;
   const [query, setQuery] = useState('');
+  const [items, setItems] = useState<SavedRecipeItem[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    if (!session?.user) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const all = await fetchMyRecipes();
+      setItems(all.filter((r) => r.saved));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not load saved recipes.');
+    } finally {
+      setLoading(false);
+    }
+  }, [session?.user]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return MOCK_SAVED;
-    return MOCK_SAVED.filter((r) => r.title.toLowerCase().includes(q));
-  }, [query]);
+    if (!q) return items;
+    return items.filter((r) => r.recipe.recipeTitle.toLowerCase().includes(q));
+  }, [query, items]);
 
-  const openRecipe = (title: string) => {
-    const recipe = {
-      ...getMockRecipeResponse().recipe,
-      recipeTitle: title,
-    };
+  const openRecipe = (item: SavedRecipeItem) => {
     router.push({
       pathname: '/recipe-result',
       params: {
-        source: 'Saved recipes',
-        recipe: JSON.stringify(recipe),
+        source: item.source ?? 'Saved',
+        recipe: JSON.stringify(item.recipe),
       },
     });
   };
 
-  const onMorePress = (title: string) => {
-    Alert.alert(title, 'Open this recipe card to view full ingredients and directions.');
+  const onRemove = async (item: SavedRecipeItem) => {
+    try {
+      await unbookmarkRecipe(item.id);
+      setItems((prev) => prev.filter((r) => r.id !== item.id));
+    } catch {
+      /* ignore */
+    }
   };
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>
       <View style={[styles.header, { paddingHorizontal: horizontalPadding }]}>
         <ThemedText style={[styles.title, { fontSize: isSmall ? typography.h1 - 2 : typography.h1 + 2 }]}>Saved</ThemedText>
-        <ThemedText style={styles.subtitle}>Recipes you’ve saved from Home or marked with the heart.</ThemedText>
+        <ThemedText style={styles.subtitle}>Recipes you've saved with the heart button.</ThemedText>
       </View>
 
-      <View style={[styles.searchWrap, { marginHorizontal: horizontalPadding }]}>
-        <Ionicons name="search" size={20} color={colors.textSecondary} />
-        <TextInput
-          placeholder="Search saved recipes"
-          placeholderTextColor={colors.textTertiary}
-          value={query}
-          onChangeText={setQuery}
-          style={styles.searchInput}
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
-        {query.length > 0 ? (
-          <Pressable onPress={() => setQuery('')} hitSlop={8}>
-            <Ionicons name="close-circle" size={20} color={colors.textTertiary} />
+      {!session?.user ? (
+        <View style={styles.empty}>
+          <Ionicons name="lock-closed-outline" size={48} color={colors.border} />
+          <ThemedText style={styles.emptyTitle}>Sign in to see saved recipes</ThemedText>
+          <Pressable style={styles.signInBtn} onPress={() => router.push('/sign-in')}>
+            <ThemedText style={styles.signInBtnText}>Sign in</ThemedText>
           </Pressable>
-        ) : null}
-      </View>
-
-      <FlatList
-        data={filtered}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={[styles.listContent, { paddingHorizontal: horizontalPadding, paddingBottom: 110 }]}
-        ListEmptyComponent={
-          <View style={styles.empty}>
-            <Ionicons name="heart-outline" size={48} color={colors.border} />
-            <ThemedText style={styles.emptyTitle}>No saved recipes yet</ThemedText>
-            <ThemedText style={styles.emptyText}>
-              Generate a recipe from the Home tab, then tap the heart to save it here.
-            </ThemedText>
+        </View>
+      ) : (
+        <>
+          <View style={[styles.searchWrap, { marginHorizontal: horizontalPadding }]}>
+            <Ionicons name="search" size={20} color={colors.textSecondary} />
+            <TextInput
+              placeholder="Search saved recipes"
+              placeholderTextColor={colors.textTertiary}
+              value={query}
+              onChangeText={setQuery}
+              style={styles.searchInput}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            {query.length > 0 ? (
+              <Pressable onPress={() => setQuery('')} hitSlop={8}>
+                <Ionicons name="close-circle" size={20} color={colors.textTertiary} />
+              </Pressable>
+            ) : null}
           </View>
-        }
-        renderItem={({ item }) => (
-          <Pressable style={styles.card} onPress={() => openRecipe(item.title)}>
-            <Image source={item.image} style={styles.cardImage} contentFit="cover" />
-            <View style={styles.cardBody}>
-              <ThemedText style={styles.cardTitle} numberOfLines={2}>
-                {item.title}
-              </ThemedText>
-              <View style={styles.cardMeta}>
-                <Ionicons name="time-outline" size={14} color={colors.textSecondary} />
-                <ThemedText style={styles.cardMetaText}>{item.time}</ThemedText>
-                <ThemedText style={styles.dot}>·</ThemedText>
-                <ThemedText style={styles.cardMetaText}>{item.savedAt}</ThemedText>
-              </View>
+
+          {loading ? (
+            <View style={styles.loadingWrap}>
+              <ActivityIndicator color={colors.text} />
             </View>
-            <Pressable style={styles.moreBtn} hitSlop={8} onPress={() => onMorePress(item.title)}>
-              <Ionicons name="ellipsis-horizontal" size={18} color={colors.textSecondary} />
-            </Pressable>
-          </Pressable>
-        )}
-        showsVerticalScrollIndicator={false}
-      />
+          ) : error ? (
+            <View style={styles.empty}>
+              <Ionicons name="cloud-offline-outline" size={48} color={colors.border} />
+              <ThemedText style={styles.emptyTitle}>Could not load recipes</ThemedText>
+              <Pressable onPress={() => void load()} style={styles.retryBtn}>
+                <ThemedText style={styles.retryText}>Retry</ThemedText>
+              </Pressable>
+            </View>
+          ) : (
+            <FlatList
+              data={filtered}
+              keyExtractor={(item) => item.id}
+              contentContainerStyle={[styles.listContent, { paddingHorizontal: horizontalPadding, paddingBottom: 110 }]}
+              ListEmptyComponent={
+                <View style={styles.empty}>
+                  <Ionicons name="heart-outline" size={48} color={colors.border} />
+                  <ThemedText style={styles.emptyTitle}>No saved recipes yet</ThemedText>
+                  <ThemedText style={styles.emptyText}>
+                    Generate a recipe from Home, then tap the heart to save it here.
+                  </ThemedText>
+                </View>
+              }
+              renderItem={({ item }) => {
+                const mins = item.recipe.totalTimeMinutes ?? item.recipe.prepTimeMinutes + item.recipe.cookTimeMinutes;
+                return (
+                  <Pressable style={styles.card} onPress={() => openRecipe(item)}>
+                    <View style={styles.cardImageWrap}>
+                      <Ionicons name="restaurant-outline" size={28} color={colors.textTertiary} />
+                    </View>
+                    <View style={styles.cardBody}>
+                      <ThemedText style={styles.cardTitle} numberOfLines={2}>
+                        {item.recipe.recipeTitle}
+                      </ThemedText>
+                      <View style={styles.cardMeta}>
+                        <Ionicons name="time-outline" size={14} color={colors.textSecondary} />
+                        <ThemedText style={styles.cardMetaText}>{mins} min</ThemedText>
+                        <ThemedText style={styles.dot}>·</ThemedText>
+                        <ThemedText style={styles.cardMetaText}>{timeAgo(item.created_at)}</ThemedText>
+                      </View>
+                    </View>
+                    <Pressable style={styles.removeBtn} hitSlop={8} onPress={() => void onRemove(item)}>
+                      <Ionicons name="heart" size={20} color={colors.danger} />
+                    </Pressable>
+                  </Pressable>
+                );
+              }}
+              showsVerticalScrollIndicator={false}
+              onRefresh={() => void load()}
+              refreshing={loading}
+            />
+          )}
+        </>
+      )}
     </SafeAreaView>
   );
 }
@@ -196,9 +228,12 @@ const styles = StyleSheet.create({
     padding: 10,
     ...shadow.sm,
   },
-  cardImage: {
+  cardImageWrap: {
+    alignItems: 'center',
+    backgroundColor: colors.surfaceMuted,
     borderRadius: radius.sm,
     height: 72,
+    justifyContent: 'center',
     width: 72,
   },
   cardBody: {
@@ -224,14 +259,20 @@ const styles = StyleSheet.create({
     color: colors.textTertiary,
     fontSize: 13,
   },
-  moreBtn: {
+  removeBtn: {
     padding: 4,
+  },
+  loadingWrap: {
+    alignItems: 'center',
+    flex: 1,
+    justifyContent: 'center',
   },
   empty: {
     alignItems: 'center',
-    gap: 8,
+    flex: 1,
+    gap: 10,
     paddingHorizontal: 24,
-    paddingTop: 48,
+    paddingTop: 60,
   },
   emptyTitle: {
     color: colors.text,
@@ -244,5 +285,29 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
     textAlign: 'center',
+  },
+  signInBtn: {
+    backgroundColor: colors.text,
+    borderRadius: radius.sm,
+    marginTop: 4,
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+  },
+  signInBtnText: {
+    color: '#FFF',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  retryBtn: {
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: radius.sm,
+    marginTop: 4,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+  },
+  retryText: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '700',
   },
 });

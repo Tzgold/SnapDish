@@ -1,13 +1,13 @@
 import { Ionicons } from '@expo/vector-icons';
-import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
-import { Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
+import { useCallback, useEffect, useState } from 'react';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { authClient } from '@/src/lib/auth-client';
 import { clearPreAuthOnboarding } from '@/src/lib/pre-auth-onboarding';
-import { getMockRecipeResponse } from '@/src/services/analyze';
+import { fetchMyRecipes, type SavedRecipeItem } from '@/src/services/recipes';
 import { colors, radius, shadow, typography } from '@/src/theme/snapdish';
 
 export default function ProfileScreen() {
@@ -16,35 +16,39 @@ export default function ProfileScreen() {
   const { width } = useWindowDimensions();
   const horizontalPadding = width < 360 ? 14 : width >= 430 ? 24 : 20;
   const statsGap = 8;
-  const statsContainerWidth = width - horizontalPadding * 2 - 28; // card padding included
+  const statsContainerWidth = width - horizontalPadding * 2 - 28;
   const statWidth = (statsContainerWidth - statsGap * 2) / 3;
   const nameSize = width < 360 ? 22 : width >= 430 ? 30 : 28;
 
-  const recents = [
-    {
-      id: 'r1',
-      title: 'Garlic Shrimp Pasta',
-      image:
-        'https://images.unsplash.com/photo-1563379091339-03246963d51a?auto=format&fit=crop&w=900&q=80',
-    },
-    {
-      id: 'r2',
-      title: 'Honey Chicken Bowl',
-      image:
-        'https://images.unsplash.com/photo-1604908554027-81f2fa8f7f65?auto=format&fit=crop&w=900&q=80',
-    },
-  ];
+  const [recipes, setRecipes] = useState<SavedRecipeItem[]>([]);
+  const [recipeLoading, setRecipeLoading] = useState(false);
 
-  const openRecentRecipe = (title: string) => {
-    const recipe = {
-      ...getMockRecipeResponse().recipe,
-      recipeTitle: title,
-    };
+  const loadRecipes = useCallback(async () => {
+    if (!session?.user) return;
+    setRecipeLoading(true);
+    try {
+      const all = await fetchMyRecipes();
+      setRecipes(all);
+    } catch {
+      /* silent */
+    } finally {
+      setRecipeLoading(false);
+    }
+  }, [session?.user]);
+
+  useEffect(() => {
+    void loadRecipes();
+  }, [loadRecipes]);
+
+  const savedCount = recipes.filter((r) => r.saved).length;
+  const recentRecipes = recipes.slice(0, 5);
+
+  const openRecipe = (item: SavedRecipeItem) => {
     router.push({
       pathname: '/recipe-result',
       params: {
-        source: 'Recently generated',
-        recipe: JSON.stringify(recipe),
+        source: item.source ?? 'Profile',
+        recipe: JSON.stringify(item.recipe),
       },
     });
   };
@@ -63,7 +67,11 @@ export default function ProfileScreen() {
           <View style={styles.headerTop}>
             <View style={styles.avatarWrap}>
               {session?.user?.image ? (
-                <Image source={session.user.image} style={styles.avatarImage} contentFit="cover" />
+                <View style={[styles.avatarWrap, styles.avatarImageWrap]}>
+                  <ThemedText style={styles.avatarFallbackText}>
+                    {(displayName.charAt(0) || 'U').toUpperCase()}
+                  </ThemedText>
+                </View>
               ) : (
                 <View style={styles.avatarFallback}>
                   <ThemedText style={styles.avatarFallbackText}>
@@ -92,18 +100,19 @@ export default function ProfileScreen() {
 
           <View style={styles.statsRow}>
             <View style={[styles.statCard, { width: statWidth }]}>
-              <ThemedText style={styles.statValue}>124</ThemedText>
+              <ThemedText style={styles.statValue}>{recipeLoading ? '–' : savedCount}</ThemedText>
               <ThemedText style={styles.statLabel}>Saved</ThemedText>
             </View>
             <View style={[styles.statCard, { width: statWidth }]}>
-              <ThemedText style={styles.statValue}>38</ThemedText>
-              <ThemedText style={styles.statLabel}>Cooked</ThemedText>
+              <ThemedText style={styles.statValue}>{recipeLoading ? '–' : recipes.length}</ThemedText>
+              <ThemedText style={styles.statLabel}>Generated</ThemedText>
             </View>
             <View style={[styles.statCard, { width: statWidth }]}>
-              <ThemedText style={styles.statValue}>4.9</ThemedText>
-              <ThemedText style={styles.statLabel}>Rating</ThemedText>
+              <ThemedText style={styles.statValue}>{session?.user ? '✓' : '–'}</ThemedText>
+              <ThemedText style={styles.statLabel}>Member</ThemedText>
             </View>
           </View>
+
           <View style={styles.ctaRow}>
             <Pressable style={styles.inlineBtn} onPress={() => router.push('/settings')}>
               <Ionicons name="settings-outline" size={16} color={colors.text} />
@@ -127,23 +136,52 @@ export default function ProfileScreen() {
           </View>
         </View>
 
-        <View style={styles.section}>
-          <ThemedText style={[styles.sectionTitle, { fontSize: width < 360 ? typography.title : typography.h3 }]}>Recently Generated</ThemedText>
-          <View style={styles.recentList}>
-            {recents.map((item) => (
-              <Pressable
-                key={item.id}
-                style={styles.recentCard}
-                onPress={() => openRecentRecipe(item.title)}>
-                <Image source={item.image} style={styles.recentImage} contentFit="cover" />
-                <View style={styles.recentInfo}>
-                  <ThemedText style={styles.recentTitle}>{item.title}</ThemedText>
-                  <ThemedText style={styles.recentHint}>Tap to view full steps</ThemedText>
-                </View>
-              </Pressable>
-            ))}
+        {session?.user ? (
+          <View style={styles.section}>
+            <ThemedText style={[styles.sectionTitle, { fontSize: width < 360 ? typography.title : typography.h3 }]}>
+              Recently Generated
+            </ThemedText>
+            {recipeLoading ? (
+              <View style={styles.loadingWrap}>
+                <ActivityIndicator color={colors.text} />
+              </View>
+            ) : recentRecipes.length === 0 ? (
+              <View style={styles.emptySection}>
+                <ThemedText style={styles.emptySectionText}>
+                  No recipes yet — generate one from Home!
+                </ThemedText>
+              </View>
+            ) : (
+              <View style={styles.recentList}>
+                {recentRecipes.map((item) => (
+                  <Pressable
+                    key={item.id}
+                    style={styles.recentCard}
+                    onPress={() => openRecipe(item)}>
+                    <View style={styles.recentIconWrap}>
+                      <Ionicons name="restaurant-outline" size={22} color={colors.textTertiary} />
+                    </View>
+                    <View style={styles.recentInfo}>
+                      <ThemedText style={styles.recentTitle} numberOfLines={1}>
+                        {item.recipe.recipeTitle}
+                      </ThemedText>
+                      <View style={styles.recentMeta}>
+                        <Ionicons name="time-outline" size={12} color={colors.textTertiary} />
+                        <ThemedText style={styles.recentHint}>
+                          {(item.recipe.totalTimeMinutes ?? item.recipe.prepTimeMinutes + item.recipe.cookTimeMinutes)} min
+                        </ThemedText>
+                        {item.saved ? (
+                          <Ionicons name="heart" size={12} color={colors.danger} />
+                        ) : null}
+                      </View>
+                    </View>
+                    <Ionicons name="chevron-forward" size={16} color={colors.textTertiary} />
+                  </Pressable>
+                ))}
+              </View>
+            )}
           </View>
-        </View>
+        ) : null}
       </ScrollView>
     </SafeAreaView>
   );
@@ -179,9 +217,10 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     width: 64,
   },
-  avatarImage: {
-    height: '100%',
-    width: '100%',
+  avatarImageWrap: {
+    alignItems: 'center',
+    backgroundColor: colors.accentLime,
+    justifyContent: 'center',
   },
   avatarFallback: {
     alignItems: 'center',
@@ -293,6 +332,20 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '700',
   },
+  loadingWrap: {
+    alignItems: 'center',
+    paddingVertical: 20,
+  },
+  emptySection: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.sm,
+    padding: 16,
+  },
+  emptySectionText: {
+    color: colors.textSecondary,
+    fontSize: 14,
+    textAlign: 'center',
+  },
   recentList: {
     gap: 10,
   },
@@ -302,13 +355,16 @@ const styles = StyleSheet.create({
     borderRadius: radius.sm,
     flexDirection: 'row',
     gap: 10,
-    overflow: 'hidden',
-    paddingRight: 10,
+    padding: 12,
     ...shadow.sm,
   },
-  recentImage: {
-    height: 80,
-    width: 90,
+  recentIconWrap: {
+    alignItems: 'center',
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: radius.xs,
+    height: 48,
+    justifyContent: 'center',
+    width: 48,
   },
   recentInfo: {
     flex: 1,
@@ -318,6 +374,11 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 15,
     fontWeight: '700',
+  },
+  recentMeta: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 4,
   },
   recentHint: {
     color: colors.textSecondary,

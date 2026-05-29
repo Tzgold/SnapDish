@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { Alert, Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
@@ -15,19 +15,14 @@ type CreateOption = {
 };
 
 export default function CreateScreen() {
-  const handleOptionPress = (optionId: string) => {
-    if (optionId === 'name') {
-      Alert.alert('Start with a dish name', 'You can type your dish on Home and tap Get recipe.');
-    } else {
-      Alert.alert('Start with a photo', 'Use Gallery or Camera on Home, then tap Get recipe.');
-    }
-    router.push('/');
-  };
-
   const { width } = useWindowDimensions();
   const isSmall = width < 360;
   const horizontalPadding = isSmall ? 14 : width >= 430 ? 24 : 20;
   const router = useRouter();
+
+  const handleOptionPress = () => {
+    router.push('/');
+  };
 
   const options: CreateOption[] = [
     {

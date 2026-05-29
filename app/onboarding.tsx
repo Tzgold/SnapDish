@@ -4,6 +4,7 @@ import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
+import { setGuestMode } from '@/app/_layout';
 import { savePreAuthOnboarding, type DietOption, type GoalOption, type SkillOption, type TimeOption } from '@/src/lib/pre-auth-onboarding';
 import { colors, radius, shadow, spacing, typography } from '@/src/theme/snapdish';
 
@@ -104,6 +105,14 @@ export default function OnboardingScreen() {
             </ThemedText>
           </Pressable>
         </View>
+        <Pressable
+          onPress={async () => {
+            await setGuestMode();
+            router.replace('/(tabs)');
+          }}
+          style={styles.guestLink}>
+          <ThemedText style={styles.guestLinkText}>Skip — continue as guest</ThemedText>
+        </Pressable>
       </ScrollView>
     </SafeAreaView>
   );
@@ -191,5 +200,14 @@ const styles = StyleSheet.create({
     color: colors.brand,
     fontSize: 14,
     fontWeight: '600',
+  },
+  guestLink: {
+    alignItems: 'center',
+    paddingVertical: spacing.xs,
+  },
+  guestLinkText: {
+    color: colors.textTertiary,
+    fontSize: 13,
+    fontWeight: '500',
   },
 });

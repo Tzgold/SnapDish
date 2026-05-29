@@ -61,7 +61,35 @@ Ensure totalTimeMinutes equals prepTimeMinutes + cookTimeMinutes (not a separate
 Ingredient quantities must match the servings count (e.g. 4 servings → amounts for 4 people).
 List realistic prepTimeMinutes (chopping, marinating) and cookTimeMinutes (active heat: boil, sauté, bake, simmer) separately.
 Times should match real techniques — e.g. boiling pasta is ~8–12 min whether servings are 2 or 4; do not inflate cook time just because servings are higher.
-Steps must be ordered, practical, and grouped logically: prep/mise steps first, then cook steps, then finish/serve. Use clear action verbs. durationMinutes on cook steps should sum roughly to cookTimeMinutes when possible.`;
+Steps must be ordered, practical, and grouped logically: prep/mise steps first, then cook steps, then finish/serve. Use clear action verbs. durationMinutes on cook steps should sum roughly to cookTimeMinutes when possible.
+
+When the user provides a written description, treat it as a hard constraint unless it is impossible — match their ingredients, method, spice level, texture goals, and substitutions exactly when stated.
+
+When a food photo is provided, inspect it carefully before writing the recipe (see image analysis rules in the user message).`;
+
+const IMAGE_ANALYSIS_RULES = `PHOTO ANALYSIS (do this mentally before writing JSON):
+Study the image in detail — do not guess from the dish name alone.
+- Dish type: pasta, rice, soup, salad, sandwich, baked good, curry, stir-fry, etc.
+- Visible ingredients: every protein, vegetable, herb, cheese, sauce, grain, or garnish you can identify (e.g. rigatoni vs penne, peas, tomato chunks, cream vs tomato sauce, melted cheese, char marks).
+- Colors & texture: glossy sauce, crispy skin, golden crust, green herbs, oil sheen, broth clarity.
+- Cooking cues: grilled, fried, baked, raw/fresh, one-pot, plated restaurant-style.
+- Portion context: single bowl, family tray, leftovers — infer sensible servings.
+- Confidence: if something is unclear (blurry, cropped, ambiguous), lower confidenceScore and say what you could not verify in notes.
+
+RECIPE RULES AFTER ANALYSIS:
+- Ingredient list should reflect what is visible OR what the user asked for in their description; prefer the description when they specify swaps or "use X instead".
+- recipeTitle should match what is actually in the photo when a photo exists.
+- Steps should describe how to reach the look and components in the image (sauce consistency, doneness, assembly).
+- First item in notes[]: one sentence — "From your photo I see: …" plus how you applied their description (if any).`;
+
+const DESCRIPTION_RULES = `USER DESCRIPTION (highest priority after safety):
+Read every word of the user's description. Extract and obey:
+- Named ingredients they have or want ("use frozen peas", "no dairy", "chicken instead of beef")
+- How they want to cook ("one-pan", "air fryer", "under 30 min", "meal prep")
+- Flavor/texture ("mild spice", "extra creamy", "crispy", "like the photo")
+- Servings or dietary needs if mentioned
+If the description conflicts with the photo, follow the description for method and substitutions; keep photo-accurate visuals for unmentioned parts.
+If the description is empty, rely on the photo and dish name only.`;
 
 function stripJsonFromContent(raw) {
   let text = raw.trim();
@@ -141,29 +169,24 @@ function buildUserContextBlock({ dishName, recipeDetails, cookingStyle, hasImage
   const name = typeof dishName === 'string' ? dishName.trim() : '';
   const details = typeof recipeDetails === 'string' ? recipeDetails.trim() : '';
   const style = typeof cookingStyle === 'string' ? cookingStyle.trim() : '';
+  const combinedDetails = [details, style && !details.toLowerCase().includes(style.toLowerCase()) ? style : '']
+    .filter(Boolean)
+    .join('. ');
+
+  if (combinedDetails) {
+    lines.push(`User's exact words:\n"""${combinedDetails}"""\n`);
+  }
 
   if (hasImage && name) {
     lines.push(
-      `The user uploaded a food photo and named it: "${name}". Treat the name and image together as the target dish.`
+      `Dish name from user: "${name}". Cross-check this label against the photo — if the photo shows something different, trust the photo for the recipe title and ingredients, but still honor the user's description above.`
     );
   } else if (hasImage && !name) {
     lines.push(
-      'The user uploaded a food photo without a dish name. Identify the food from the image; if unsure, pick the most likely dish and lower confidenceScore.'
+      'No dish name provided — identify the dish entirely from the photo. Lower confidenceScore if identification is uncertain.'
     );
   } else if (name) {
-    lines.push(`The user wants a recipe for: "${name}".`);
-  }
-
-  if (details) {
-    lines.push(
-      `User description (follow closely — ingredients they have, what they see, spice level, texture, substitutions, dietary tweaks): "${details}"`
-    );
-  }
-
-  if (style) {
-    lines.push(
-      `How they want to cook (method, equipment, step structure): "${style}". Adapt techniques, timing, and step order to match.`
-    );
+    lines.push(`Dish requested: "${name}".`);
   }
 
   return lines.length ? `${lines.join('\n')}\n\n` : '';
@@ -208,12 +231,14 @@ async function withPrimaryFallback(openai, primaryModel, fallbackModel, temperat
 export async function recipeFromDishName(openai, models, dishName, recipeDetails, cookingStyle, preferences) {
   const prefBlock = buildPreferenceInstructions(preferences);
   const context = buildUserContextBlock({ dishName, recipeDetails, cookingStyle, hasImage: false });
-  const user = `${context}You do not have live web access. Use your knowledge as if you summarized trustworthy recipes from major cooking sites and classic techniques. Prefer widely recognized versions of the dish. If the name is vague, choose the most common interpretation and explain briefly in notes.
+  const user = `${context}${DESCRIPTION_RULES}
+
+You do not have live web access. Use your knowledge as if you summarized trustworthy recipes from major cooking sites and classic techniques. Prefer widely recognized versions of the dish unless the user's description asks for a specific variant. If the name is vague, choose the most common interpretation and explain briefly in notes.
 ${prefBlock}
 
 Return JSON only.`;
 
-  return withPrimaryFallback(openai, models.primary, models.fallback, 0.45, async () => [
+  return withPrimaryFallback(openai, models.primary, models.fallback, 0.4, async () => [
     { role: 'system', content: JSON_ONLY_SYSTEM },
     { role: 'user', content: user },
   ]);
@@ -244,16 +269,20 @@ export async function recipeFromImage(
     hasImage: true,
   });
 
-  const userText = `${context}Produce a complete recipe: title, servings, realistic prep/cook/total times, estimated calories (total for all servings), ingredients with quantities, and numbered steps grouped prep → cook → serve. Add durationMinutes on cook steps when helpful. If the image is unclear, lower confidenceScore and say so in notes.
-${prefBlock}`;
+  const userText = `${context}${IMAGE_ANALYSIS_RULES}
 
-  return withPrimaryFallback(openai, models.primary, models.fallback, 0.4, async () => [
+Produce a complete recipe JSON: title, servings, realistic prep/cook/total times, estimated calories (total for all servings), ingredients with quantities, and numbered steps grouped prep → cook → serve. Add durationMinutes on cook steps when helpful. Match the photo and user description as closely as possible.
+${prefBlock}
+
+Return JSON only.`;
+
+  return withPrimaryFallback(openai, models.primary, models.fallback, 0.35, async () => [
     { role: 'system', content: JSON_ONLY_SYSTEM },
     {
       role: 'user',
       content: [
+        { type: 'image_url', image_url: { url: dataUrl, detail: 'high' } },
         { type: 'text', text: userText },
-        { type: 'image_url', image_url: { url: dataUrl } },
       ],
     },
   ]);

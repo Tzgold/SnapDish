@@ -7,6 +7,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { ThemedText } from '@/components/themed-text';
 import { authClient } from '@/src/lib/auth-client';
 import { API_BASE_URL } from '@/src/config/api';
+import { setGuestMode } from '@/app/_layout';
 import { signInWithGoogle } from '@/src/lib/social-auth';
 import { syncOnboardingPreferences } from '@/src/services/preferences';
 import { colors, radius, shadow, spacing } from '@/src/theme/snapdish';
@@ -152,6 +153,14 @@ export default function SignInScreen() {
         <Pressable onPress={() => router.push('/sign-up')} style={styles.linkRow}>
           <ThemedText style={styles.linkText}>New here? Create an account</ThemedText>
         </Pressable>
+        <Pressable
+          onPress={async () => {
+            await setGuestMode();
+            router.replace('/(tabs)');
+          }}
+          style={styles.guestRow}>
+          <ThemedText style={styles.guestText}>Continue as guest</ThemedText>
+        </Pressable>
       </View>
     </SafeAreaView>
   );
@@ -267,5 +276,14 @@ const styles = StyleSheet.create({
     color: colors.brand,
     fontSize: 14,
     fontWeight: '600',
+  },
+  guestRow: {
+    alignItems: 'center',
+    paddingBottom: spacing.sm,
+  },
+  guestText: {
+    color: colors.textTertiary,
+    fontSize: 14,
+    fontWeight: '500',
   },
 });

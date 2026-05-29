@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Pressable, ScrollView, Share, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -10,6 +10,8 @@ import { ThemedText } from '@/components/themed-text';
 import { authClient } from '@/src/lib/auth-client';
 import { getMockRecipeResponse } from '@/src/services/analyze';
 import { apiFetch } from '@/src/services/http';
+import { bookmarkRecipe, saveRecipe, unbookmarkRecipe } from '@/src/services/recipes';
+import { isNotificationEnabled } from '@/src/services/notification-settings';
 import { getRecipeHeroImage } from '@/src/state/recipe-hero-image';
 import { RecipeResult } from '@/src/types/recipe';
 import { colors, radius, shadow, spacing, typography } from '@/src/theme/snapdish';
@@ -76,6 +78,9 @@ export default function RecipeResultScreen() {
   const params = useLocalSearchParams<{ recipe?: string; source?: string; preferencesApplied?: string }>();
   const [activeTab, setActiveTab] = useState<TabKey>('ingredients');
   const [favorite, setFavorite] = useState(false);
+  const [saveBusy, setSaveBusy] = useState(false);
+  const [activeTimer, setActiveTimer] = useState<{ stepOrder: number; remaining: number } | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [checkedIngredients, setCheckedIngredients] = useState<Set<string>>(new Set());
   const [servingsOverride, setServingsOverride] = useState<number | null>(null);
   const [planReady, setPlanReady] = useState(false);
@@ -103,6 +108,42 @@ export default function RecipeResultScreen() {
 
   const totalCalories = recipe.calories ?? Math.round(420 * (displayServings / baseServings));
   const caloriesPerServing = Math.round(totalCalories / displayServings);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, []);
+
+  const startTimer = (stepOrder: number, minutes: number) => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    const totalSec = minutes * 60;
+    setActiveTimer({ stepOrder, remaining: totalSec });
+    timerRef.current = setInterval(() => {
+      setActiveTimer((prev) => {
+        if (!prev) return null;
+        if (prev.remaining <= 1) {
+          if (timerRef.current) clearInterval(timerRef.current);
+          void isNotificationEnabled('timerAlerts').then((on) => {
+            if (on) Alert.alert('Timer done', `Step ${stepOrder} timer finished!`);
+          });
+          return null;
+        }
+        return { ...prev, remaining: prev.remaining - 1 };
+      });
+    }, 1000);
+  };
+
+  const stopTimer = () => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    setActiveTimer(null);
+  };
+
+  const formatTimer = (sec: number) => {
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m}:${String(s).padStart(2, '0')}`;
+  };
 
   useEffect(() => {
     setServingsOverride(null);
@@ -185,6 +226,33 @@ export default function RecipeResultScreen() {
     setActiveTab('directions');
   };
 
+  const onToggleFavorite = async () => {
+    if (!session?.user) {
+      Alert.alert('Sign in required', 'Sign in to save recipes to your collection.');
+      return;
+    }
+    if (saveBusy) return;
+    setSaveBusy(true);
+    try {
+      let id = remoteRecipeId;
+      if (!id) {
+        id = await saveRecipe(recipe, source);
+        setRemoteRecipeId(id);
+      }
+      if (favorite) {
+        await unbookmarkRecipe(id);
+        setFavorite(false);
+      } else {
+        await bookmarkRecipe(id);
+        setFavorite(true);
+      }
+    } catch (e) {
+      Alert.alert('Save', e instanceof Error ? e.message : 'Could not save recipe.');
+    } finally {
+      setSaveBusy(false);
+    }
+  };
+
   const onShare = async () => {
     try {
       await Share.share({
@@ -230,10 +298,10 @@ export default function RecipeResultScreen() {
               </Pressable>
               <Pressable
                 style={styles.roundBtn}
-                onPress={() => setFavorite((f) => !f)}
+                onPress={() => void onToggleFavorite()}
                 accessibilityRole="button"
                 accessibilityLabel={favorite ? 'Remove from favorites' : 'Save to favorites'}>
-                <Ionicons name={favorite ? 'heart' : 'heart-outline'} size={18} color={favorite ? colors.danger : colors.text} />
+                <Ionicons name={saveBusy ? 'hourglass-outline' : favorite ? 'heart' : 'heart-outline'} size={18} color={favorite ? colors.danger : colors.text} />
               </Pressable>
             </View>
           </View>
@@ -433,12 +501,19 @@ export default function RecipeResultScreen() {
                   </View>
                   <ThemedText style={styles.stepText}>{step.instruction}</ThemedText>
                   {step.durationMinutes ? (
-                    <Pressable
-                      style={styles.timerBtn}
-                      onPress={() => Alert.alert('Timer started', `${step.durationMinutes} minute timer started for Step ${step.order}.`)}>
-                      <Ionicons name="timer-outline" size={18} color={colors.text} />
-                      <ThemedText style={styles.timerBtnText}>Start {step.durationMinutes} min timer</ThemedText>
-                    </Pressable>
+                    activeTimer?.stepOrder === step.order ? (
+                      <Pressable style={[styles.timerBtn, styles.timerBtnActive]} onPress={stopTimer}>
+                        <Ionicons name="stop-circle-outline" size={18} color={colors.text} />
+                        <ThemedText style={styles.timerBtnText}>{formatTimer(activeTimer.remaining)} — tap to stop</ThemedText>
+                      </Pressable>
+                    ) : (
+                      <Pressable
+                        style={styles.timerBtn}
+                        onPress={() => startTimer(step.order, step.durationMinutes!)}>
+                        <Ionicons name="timer-outline" size={18} color={colors.text} />
+                        <ThemedText style={styles.timerBtnText}>Start {step.durationMinutes} min timer</ThemedText>
+                      </Pressable>
+                    )
                   ) : null}
                 </View>
               ))}
@@ -470,9 +545,9 @@ export default function RecipeResultScreen() {
               <Ionicons name="share-outline" size={18} color={colors.text} />
               <ThemedText style={styles.outlineBtnText}>Share</ThemedText>
             </Pressable>
-            <Pressable style={styles.primaryMini} onPress={() => setFavorite((f) => !f)}>
-              <Ionicons name={favorite ? 'heart' : 'heart-outline'} size={18} color="#FFF" />
-              <ThemedText style={styles.primaryMiniText}>{favorite ? 'Saved' : 'Save'}</ThemedText>
+            <Pressable style={[styles.primaryMini, saveBusy && { opacity: 0.6 }]} onPress={() => void onToggleFavorite()} disabled={saveBusy}>
+              <Ionicons name={saveBusy ? 'hourglass-outline' : favorite ? 'heart' : 'heart-outline'} size={18} color="#FFF" />
+              <ThemedText style={styles.primaryMiniText}>{saveBusy ? '…' : favorite ? 'Saved' : 'Save'}</ThemedText>
             </Pressable>
           </View>
         </View>
@@ -928,6 +1003,9 @@ const styles = StyleSheet.create({
     marginTop: 12,
     paddingHorizontal: 14,
     paddingVertical: 10,
+  },
+  timerBtnActive: {
+    backgroundColor: '#FFE5B4',
   },
   timerBtnText: {
     color: colors.text,

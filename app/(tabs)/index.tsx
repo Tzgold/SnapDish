@@ -21,6 +21,7 @@ import { ThemedText } from '@/components/themed-text';
 import { authClient } from '@/src/lib/auth-client';
 import { colors, radius, shadow, spacing, typography } from '@/src/theme/snapdish';
 import { analyzeRecipe } from '@/src/services/analyze';
+import { getSelectedCookingStyle } from '@/app/(tabs)/categories';
 import { setRecipeHeroImage } from '@/src/state/recipe-hero-image';
 import type { AnalyzeRecipeRequest } from '@/src/types/recipe';
 
@@ -160,9 +161,11 @@ export default function HomeScreen() {
     setStatusMessage('Talking to SnapDish AI…');
 
     try {
+      const cookingStyle = await getSelectedCookingStyle();
       const payload: AnalyzeRecipeRequest = {};
       if (name) payload.dishName = name;
       if (details) payload.recipeDetails = details;
+      if (cookingStyle) payload.cookingStyle = cookingStyle;
       if (pendingImage) {
         payload.imageBase64 = pendingImage.base64;
         payload.imageMimeType = pendingImage.mimeType;
@@ -228,8 +231,9 @@ export default function HomeScreen() {
           </Pressable>
           <Pressable
             style={styles.iconGhost}
-            onPress={() => Alert.alert('Notifications', 'You are all caught up for now.')}
-            hitSlop={10}>
+            onPress={() => router.push('/notifications')}
+            hitSlop={10}
+            accessibilityLabel="Notification settings">
             <Ionicons name="notifications-outline" size={20} color={colors.text} />
           </Pressable>
         </View>
@@ -317,7 +321,7 @@ export default function HomeScreen() {
                 </View>
                 <ThemedText style={styles.photoPromptTitle}>Anything else? (optional)</ThemedText>
                 <TextInput
-                  placeholder="e.g. one-pan, mild spice, use what I have"
+                  placeholder="How to cook, ingredients you have, spice level — the more detail, the better the recipe"
                   placeholderTextColor={colors.textTertiary}
                   value={recipeDetails}
                   onChangeText={setRecipeDetails}
