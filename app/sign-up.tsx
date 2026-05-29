@@ -6,6 +6,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { authClient } from '@/src/lib/auth-client';
+import { signInWithGoogle } from '@/src/lib/social-auth';
 import { syncOnboardingPreferences } from '@/src/services/preferences';
 import { colors, radius, shadow, spacing } from '@/src/theme/snapdish';
 
@@ -85,12 +86,9 @@ export default function SignUpScreen() {
   const onContinueWithGoogle = async () => {
     setBusy(true);
     try {
-      const { error } = await authClient.signIn.social({
-        provider: 'google',
-        callbackURL: '/profile',
-      });
-      if (error) {
-        Alert.alert('Google sign in', error.message ?? 'Could not continue with Google.');
+      const result = await signInWithGoogle();
+      if (!result.ok) {
+        Alert.alert('Google sign in', result.message);
         return;
       }
       try {
@@ -98,7 +96,7 @@ export default function SignUpScreen() {
       } catch (syncErr) {
         console.warn('preferences sync failed', syncErr);
       }
-      router.push('/profile');
+      router.replace('/profile');
     } catch (err) {
       Alert.alert('Google sign in', err instanceof Error ? err.message : 'Could not continue with Google.');
     } finally {
@@ -158,6 +156,9 @@ export default function SignUpScreen() {
         </Pressable>
         <Pressable onPress={() => router.push('/sign-in')} style={styles.linkRow}>
           <ThemedText style={styles.linkText}>Already have an account? Sign in</ThemedText>
+        </Pressable>
+        <Pressable onPress={() => router.push('/forgot-password')} style={styles.forgotRow}>
+          <ThemedText style={styles.forgotText}>Forgot password?</ThemedText>
         </Pressable>
       </View>
     </SafeAreaView>
@@ -232,7 +233,7 @@ const styles = StyleSheet.create({
     marginTop: spacing.xs,
   },
   divider: {
-    backgroundColor: colors.surfaceBorder,
+    backgroundColor: colors.border,
     flex: 1,
     height: 1,
   },
@@ -244,7 +245,7 @@ const styles = StyleSheet.create({
   googleBtn: {
     alignItems: 'center',
     backgroundColor: colors.surfaceMuted,
-    borderColor: colors.surfaceBorder,
+    borderColor: colors.border,
     borderRadius: radius.sm,
     borderWidth: 1,
     flexDirection: 'row',
@@ -264,6 +265,15 @@ const styles = StyleSheet.create({
   linkText: {
     color: colors.brand,
     fontSize: 15,
+    fontWeight: '600',
+  },
+  forgotRow: {
+    alignItems: 'center',
+    paddingTop: spacing.xxs,
+  },
+  forgotText: {
+    color: colors.textSecondary,
+    fontSize: 14,
     fontWeight: '600',
   },
 });

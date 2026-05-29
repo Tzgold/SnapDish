@@ -53,7 +53,7 @@ export default function ForgotPasswordScreen() {
           <>
             <ThemedText style={styles.label}>Check your email</ThemedText>
             <ThemedText style={styles.body}>
-              If an account exists for {email.trim()}, a password reset link was sent. If the app is in development, the link is also printed in the API server terminal.
+              If an account exists for {email.trim()}, we sent a reset link. In development the link is printed in the API server terminal — open it on your phone or paste the token on the next screen.
             </ThemedText>
             <Pressable style={styles.primaryBtn} onPress={() => router.push('/reset-password')}>
               <ThemedText style={styles.primaryBtnText}>I have a reset token</ThemedText>

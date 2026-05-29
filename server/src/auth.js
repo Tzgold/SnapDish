@@ -31,6 +31,12 @@ const devTrusted = [
   'exp://**',
 ];
 
+/** Public HTTPS URL for OAuth callbacks (ngrok). Falls back to BETTER_AUTH_URL. */
+const authBaseURL =
+  process.env.BETTER_AUTH_PUBLIC_URL?.trim() ||
+  process.env.BETTER_AUTH_URL?.trim() ||
+  'http://localhost:4000';
+
 /** Set BETTER_AUTH_REQUIRE_EMAIL_VERIFICATION=true only when real email (SMTP) is configured. */
 const requireEmailVerification =
   process.env.BETTER_AUTH_REQUIRE_EMAIL_VERIFICATION === 'true';
@@ -38,7 +44,7 @@ const requireEmailVerification =
 export const auth = pool
   ? betterAuth({
       secret: process.env.BETTER_AUTH_SECRET || 'dev-only-change-me',
-      baseURL: process.env.BETTER_AUTH_URL || 'http://localhost:4000',
+      baseURL: authBaseURL,
       database: pool,
       plugins: [expo()],
       socialProviders: process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
@@ -74,6 +80,19 @@ export const auth = pool
       trustedOrigins: [
         ...devTrusted,
         ...(process.env.BETTER_AUTH_TRUSTED_ORIGINS?.split(',').map((s) => s.trim()).filter(Boolean) ?? []),
+        ...(authBaseURL.startsWith('https://') ? [authBaseURL] : []),
       ],
     })
   : null;
+
+if (auth && process.env.GOOGLE_CLIENT_ID) {
+  const isHttps = authBaseURL.startsWith('https://');
+  if (!isHttps) {
+    console.warn(
+      '[auth] Google OAuth is configured but base URL is not HTTPS:',
+      authBaseURL,
+      '\n  Google will reject sign-in until BETTER_AUTH_URL (or BETTER_AUTH_PUBLIC_URL) is a public https URL, e.g. ngrok.',
+      '\n  Add redirect URI in Google Cloud: https://YOUR-TUNNEL/api/auth/callback/google',
+    );
+  }
+}

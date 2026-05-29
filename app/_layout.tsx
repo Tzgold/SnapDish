@@ -1,4 +1,5 @@
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
+import * as Linking from 'expo-linking';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
@@ -7,6 +8,24 @@ import 'react-native-reanimated';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { authClient } from '@/src/lib/auth-client';
+
+function routeFromAuthDeepLink(url: string): string | null {
+  try {
+    const parsed = Linking.parse(url);
+    const path = (parsed.path ?? '').replace(/^\//, '');
+    if (path === 'reset-password' || path.startsWith('reset-password')) {
+      const token = parsed.queryParams?.token;
+      const t = typeof token === 'string' ? token : Array.isArray(token) ? token[0] : '';
+      return t ? `/reset-password?token=${encodeURIComponent(t)}` : '/reset-password';
+    }
+    if (path === 'profile' || path.startsWith('profile')) {
+      return '/profile';
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
 
 export const unstable_settings = {
   anchor: '(tabs)',
@@ -17,6 +36,20 @@ export default function RootLayout() {
   const router = useRouter();
   const segments = useSegments();
   const { data: session, isPending } = authClient.useSession();
+
+  useEffect(() => {
+    const handleUrl = (url: string) => {
+      const route = routeFromAuthDeepLink(url);
+      if (route) router.push(route as '/reset-password' | '/profile');
+    };
+
+    void Linking.getInitialURL().then((url) => {
+      if (url) handleUrl(url);
+    });
+
+    const sub = Linking.addEventListener('url', ({ url }) => handleUrl(url));
+    return () => sub.remove();
+  }, [router]);
 
   useEffect(() => {
     if (isPending) return;

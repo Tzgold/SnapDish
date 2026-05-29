@@ -6,6 +6,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { authClient } from '@/src/lib/auth-client';
+import { API_BASE_URL } from '@/src/config/api';
+import { signInWithGoogle } from '@/src/lib/social-auth';
 import { syncOnboardingPreferences } from '@/src/services/preferences';
 import { colors, radius, shadow, spacing } from '@/src/theme/snapdish';
 
@@ -47,10 +49,10 @@ export default function SignInScreen() {
           Alert.alert('Use Google sign in', 'This account was created with Google. Tap Continue with Google.');
           return;
         }
-        if (status === 404 || /fetch|network|failed to connect|timeout|not found/i.test(msg)) {
+        if (status === 404 || /fetch|network|failed to connect|timeout|not found|unable to resolve/i.test(msg)) {
           Alert.alert(
             'Cannot reach server',
-            'Start the API (npm run dev in server/), use the same URL in app .env and server BETTER_AUTH_URL, and use your PC Wi‑Fi IP (not an old ngrok link).',
+            `The app is trying ${API_BASE_URL}. Start the server (npm run dev in server/), confirm phone and PC are on the same Wi‑Fi, run ipconfig and update EXPO_PUBLIC_API_URL + BETTER_AUTH_URL to your current IPv4 (often changes after reconnecting Wi‑Fi), then restart Expo.`,
           );
           return;
         }
@@ -81,20 +83,9 @@ export default function SignInScreen() {
   const onContinueWithGoogle = async () => {
     setBusy(true);
     try {
-      const { error } = await authClient.signIn.social({
-        provider: 'google',
-        callbackURL: '/profile',
-      });
-      if (error) {
-        const msg = error.message ?? '';
-        if (/redirect_uri|invalid.*redirect|unauthorized|origin|insecure/i.test(msg)) {
-          Alert.alert(
-            'Google sign in needs a public URL',
-            'Google does not allow OAuth callbacks to LAN IPs like 192.168.x.x. Run the API behind ngrok (https://...ngrok-free.dev) and add that URL + /api/auth/callback/google as an authorized redirect URI in Google Cloud → OAuth client. For now, please use email and password.',
-          );
-          return;
-        }
-        Alert.alert('Google sign in', msg || 'Could not continue with Google. Use email and password for now.');
+      const result = await signInWithGoogle();
+      if (!result.ok) {
+        Alert.alert('Google sign in', result.message);
         return;
       }
       try {
@@ -102,11 +93,11 @@ export default function SignInScreen() {
       } catch (syncErr) {
         console.warn('preferences sync failed', syncErr);
       }
-      router.push('/profile');
+      router.replace('/profile');
     } catch (err) {
       Alert.alert(
         'Google sign in',
-        err instanceof Error ? err.message : 'Could not continue with Google. Use email and password for now.',
+        err instanceof Error ? err.message : 'Could not continue with Google.',
       );
     } finally {
       setBusy(false);
@@ -143,11 +134,11 @@ export default function SignInScreen() {
           value={password}
           onChangeText={setPassword}
         />
-        <Pressable style={[styles.primaryBtn, busy && styles.primaryBtnDisabled]} onPress={() => void onSignIn()} disabled={busy}>
-          <ThemedText style={styles.primaryBtnText}>{busy ? 'Signing in…' : 'Continue'}</ThemedText>
-        </Pressable>
         <Pressable onPress={() => router.push('/forgot-password')} style={styles.forgotRow}>
           <ThemedText style={styles.forgotText}>Forgot password?</ThemedText>
+        </Pressable>
+        <Pressable style={[styles.primaryBtn, busy && styles.primaryBtnDisabled]} onPress={() => void onSignIn()} disabled={busy}>
+          <ThemedText style={styles.primaryBtnText}>{busy ? 'Signing in…' : 'Continue'}</ThemedText>
         </Pressable>
         <View style={styles.dividerRow}>
           <View style={styles.divider} />
@@ -234,7 +225,7 @@ const styles = StyleSheet.create({
     marginTop: spacing.xs,
   },
   divider: {
-    backgroundColor: colors.surfaceBorder,
+    backgroundColor: colors.border,
     flex: 1,
     height: 1,
   },
@@ -246,7 +237,7 @@ const styles = StyleSheet.create({
   googleBtn: {
     alignItems: 'center',
     backgroundColor: colors.surfaceMuted,
-    borderColor: colors.surfaceBorder,
+    borderColor: colors.border,
     borderRadius: radius.sm,
     borderWidth: 1,
     flexDirection: 'row',
@@ -270,11 +261,11 @@ const styles = StyleSheet.create({
   },
   forgotRow: {
     alignItems: 'flex-end',
-    paddingVertical: spacing.xxs,
+    marginTop: -4,
   },
   forgotText: {
-    color: colors.textSecondary,
-    fontSize: 13,
+    color: colors.brand,
+    fontSize: 14,
     fontWeight: '600',
   },
 });

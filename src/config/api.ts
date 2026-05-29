@@ -13,10 +13,14 @@ const rawBase =
 
 export const API_BASE_URL = rawBase.replace(/\/+$/, '');
 
-if (__DEV__ && /localhost|127\.0\.0\.1/i.test(API_BASE_URL)) {
-  console.warn(
-    '[SnapDish] API_BASE_URL uses localhost — phones and many emulators cannot reach your PC. Set EXPO_PUBLIC_API_URL in .env to http://YOUR_LAN_IP:4000 and restart Expo.',
-  );
+if (__DEV__) {
+  if (/localhost|127\.0\.0\.1/i.test(API_BASE_URL)) {
+    console.warn(
+      '[SnapDish] API_BASE_URL uses localhost — phones cannot reach your PC. Set EXPO_PUBLIC_API_URL in .env to http://YOUR_LAN_IP:4000 and restart Expo.',
+    );
+  } else {
+    console.log('[SnapDish] API_BASE_URL =', API_BASE_URL);
+  }
 }
 
 export const API_ROUTES = {
