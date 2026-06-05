@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -8,6 +9,13 @@ import { ThemedText } from '@/components/themed-text';
 import { authClient } from '@/src/lib/auth-client';
 import { clearPreAuthOnboarding } from '@/src/lib/pre-auth-onboarding';
 import { fetchMyRecipes, type SavedRecipeItem } from '@/src/services/recipes';
+import {
+  fetchSubscriptionInfo,
+  isProStatus,
+  openBillingPortal,
+  syncSubscription,
+  type SubscriptionInfo,
+} from '@/src/services/subscription';
 import { colors, radius, shadow, typography } from '@/src/theme/snapdish';
 
 export default function ProfileScreen() {
@@ -22,13 +30,19 @@ export default function ProfileScreen() {
 
   const [recipes, setRecipes] = useState<SavedRecipeItem[]>([]);
   const [recipeLoading, setRecipeLoading] = useState(false);
+  const [subInfo, setSubInfo] = useState<SubscriptionInfo | null>(null);
+  const [portalBusy, setPortalBusy] = useState(false);
 
-  const loadRecipes = useCallback(async () => {
+  const loadProfile = useCallback(async () => {
     if (!session?.user) return;
     setRecipeLoading(true);
     try {
-      const all = await fetchMyRecipes();
+      const [all, sub] = await Promise.all([
+        fetchMyRecipes(),
+        syncSubscription().catch(() => fetchSubscriptionInfo().catch(() => null)),
+      ]);
       setRecipes(all);
+      if (sub) setSubInfo(sub);
     } catch {
       /* silent */
     } finally {
@@ -36,9 +50,28 @@ export default function ProfileScreen() {
     }
   }, [session?.user]);
 
-  useEffect(() => {
-    void loadRecipes();
-  }, [loadRecipes]);
+  useFocusEffect(
+    useCallback(() => {
+      void loadProfile();
+    }, [loadProfile]),
+  );
+
+  const isPro = subInfo ? isProStatus(subInfo.status) : false;
+
+  const handleManageSub = async () => {
+    setPortalBusy(true);
+    try {
+      const { openBillingPortal: open } = await import('@/src/services/subscription');
+      const url = await open();
+      const { default: Linking } = await import('expo-linking');
+      await Linking.openURL(url);
+    } catch (e) {
+      const { Alert } = await import('react-native');
+      Alert.alert('Billing', e instanceof Error ? e.message : 'Could not open billing portal.');
+    } finally {
+      setPortalBusy(false);
+    }
+  };
 
   const savedCount = recipes.filter((r) => r.saved).length;
   const recentRecipes = recipes.slice(0, 5);
@@ -86,9 +119,9 @@ export default function ProfileScreen() {
               </ThemedText>
               <ThemedText style={styles.subtitle}>{displayEmail}</ThemedText>
               {session?.user ? (
-                <View style={styles.badge}>
-                  <Ionicons name="sparkles" size={12} color={colors.text} />
-                  <ThemedText style={styles.badgeText}>SnapDish account</ThemedText>
+                <View style={[styles.badge, isPro && styles.badgePro]}>
+                  <Ionicons name={isPro ? 'star' : 'sparkles'} size={12} color={colors.text} />
+                  <ThemedText style={styles.badgeText}>{isPro ? 'SnapDish Pro' : 'SnapDish account'}</ThemedText>
                 </View>
               ) : (
                 <Pressable style={styles.signInChip} onPress={() => router.push('/sign-in')}>
@@ -112,6 +145,26 @@ export default function ProfileScreen() {
               <ThemedText style={styles.statLabel}>Member</ThemedText>
             </View>
           </View>
+
+          {/* Subscription CTA */}
+          {session?.user ? (
+            isPro ? (
+              <Pressable
+                style={styles.subManageBtn}
+                onPress={() => void handleManageSub()}
+                disabled={portalBusy}>
+                <Ionicons name="star" size={14} color={colors.text} />
+                <ThemedText style={styles.subManageBtnText}>
+                  {portalBusy ? 'Opening…' : 'Pro — manage subscription'}
+                </ThemedText>
+              </Pressable>
+            ) : (
+              <Pressable style={styles.upgradeBtn} onPress={() => router.push('/paywall')}>
+                <Ionicons name="flash-outline" size={14} color="#000" />
+                <ThemedText style={styles.upgradeBtnText}>Upgrade to Pro — $9/mo</ThemedText>
+              </Pressable>
+            )
+          ) : null}
 
           <View style={styles.ctaRow}>
             <Pressable style={styles.inlineBtn} onPress={() => router.push('/settings')}>
@@ -257,6 +310,37 @@ const styles = StyleSheet.create({
     marginTop: 6,
     paddingHorizontal: 8,
     paddingVertical: 4,
+  },
+  badgePro: {
+    backgroundColor: '#FFD700',
+  },
+  upgradeBtn: {
+    alignItems: 'center',
+    backgroundColor: colors.accentLime,
+    borderRadius: radius.sm,
+    flexDirection: 'row',
+    gap: 6,
+    justifyContent: 'center',
+    paddingVertical: 10,
+  },
+  upgradeBtnText: {
+    color: '#000',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  subManageBtn: {
+    alignItems: 'center',
+    backgroundColor: '#FFD700',
+    borderRadius: radius.sm,
+    flexDirection: 'row',
+    gap: 6,
+    justifyContent: 'center',
+    paddingVertical: 10,
+  },
+  subManageBtnText: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: '700',
   },
   badgeText: {
     color: colors.text,

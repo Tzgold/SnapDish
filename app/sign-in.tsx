@@ -7,7 +7,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { ThemedText } from '@/components/themed-text';
 import { authClient } from '@/src/lib/auth-client';
 import { API_BASE_URL } from '@/src/config/api';
-import { setGuestMode } from '@/app/_layout';
+import { clearGuestMode, setGuestMode } from '@/src/lib/guest-mode';
 import { signInWithGoogle } from '@/src/lib/social-auth';
 import { syncOnboardingPreferences } from '@/src/services/preferences';
 import { colors, radius, shadow, spacing } from '@/src/theme/snapdish';
@@ -89,12 +89,13 @@ export default function SignInScreen() {
         Alert.alert('Google sign in', result.message);
         return;
       }
+      await clearGuestMode();
       try {
         await syncOnboardingPreferences();
       } catch (syncErr) {
         console.warn('preferences sync failed', syncErr);
       }
-      router.replace('/profile');
+      router.replace('/(tabs)');
     } catch (err) {
       Alert.alert(
         'Google sign in',

@@ -8,30 +8,35 @@ import 'react-native-reanimated';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { authClient } from '@/src/lib/auth-client';
+import { clearGuestMode, GUEST_FLAG } from '@/src/lib/guest-mode';
 import { secureStorage } from '@/src/lib/secure-storage';
 
-export const GUEST_FLAG = 'snapdish.guestMode';
-
-export async function setGuestMode(): Promise<void> {
-  await secureStorage.setItemAsync(GUEST_FLAG, '1');
-}
-
-export async function clearGuestMode(): Promise<void> {
-  await secureStorage.deleteItemAsync(GUEST_FLAG);
-}
+export { clearGuestMode, setGuestMode } from '@/src/lib/guest-mode';
 
 function routeFromAuthDeepLink(url: string): string | null {
   try {
     const parsed = Linking.parse(url);
     const path = (parsed.path ?? '').replace(/^\//, '');
-    if (path === 'reset-password' || path.startsWith('reset-password')) {
+    const host = (parsed.hostname ?? '').replace(/^\//, '');
+    const segment = path || host;
+
+    if (segment === 'reset-password' || segment.startsWith('reset-password')) {
       const token = parsed.queryParams?.token;
       const t = typeof token === 'string' ? token : Array.isArray(token) ? token[0] : '';
       return t ? `/reset-password?token=${encodeURIComponent(t)}` : '/reset-password';
     }
-    if (path === 'profile' || path.startsWith('profile')) {
+    if (segment === 'profile' || segment.startsWith('profile')) {
       return '/profile';
     }
+    if (segment === 'subscription-success') {
+      const sessionId = parsed.queryParams?.session_id;
+      const sid =
+        typeof sessionId === 'string' ? sessionId : Array.isArray(sessionId) ? sessionId[0] : '';
+      return sid
+        ? `/paywall?success=1&session_id=${encodeURIComponent(sid)}`
+        : '/paywall?success=1';
+    }
+    if (segment === 'subscription-cancel') return '/paywall?cancelled=1';
   } catch {
     /* ignore */
   }
@@ -64,7 +69,7 @@ export default function RootLayout() {
   useEffect(() => {
     const handleUrl = (url: string) => {
       const route = routeFromAuthDeepLink(url);
-      if (route) router.push(route as '/reset-password' | '/profile');
+      if (route) router.push(route as never);
     };
     void Linking.getInitialURL().then((url) => {
       if (url) handleUrl(url);
@@ -87,8 +92,8 @@ export default function RootLayout() {
 
     if (!session) {
       if (isGuest) {
-        // Guest chose to skip sign-in — allow tabs, redirect away from auth
-        if (inAuth || inOnboarding) router.replace('/(tabs)');
+        // Guest can use the app and open sign-in / sign-up to create an account
+        if (inOnboarding) router.replace('/(tabs)');
         return;
       }
       // Not authenticated, not in guest mode → onboarding
@@ -128,6 +133,7 @@ export default function RootLayout() {
         <Stack.Screen name="forgot-password" options={{ headerShown: false }} />
         <Stack.Screen name="reset-password" options={{ headerShown: false }} />
         <Stack.Screen name="preferences" options={{ headerShown: false }} />
+        <Stack.Screen name="paywall" options={{ headerShown: false }} />
         <Stack.Screen name="notifications" options={{ headerShown: false }} />
         <Stack.Screen name="privacy" options={{ headerShown: false }} />
         <Stack.Screen name="about" options={{ headerShown: false }} />

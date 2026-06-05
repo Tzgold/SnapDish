@@ -1,8 +1,9 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
+import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -23,6 +24,13 @@ import { colors, radius, shadow, spacing, typography } from '@/src/theme/snapdis
 import { analyzeRecipe } from '@/src/services/analyze';
 import { getSelectedCookingStyle } from '@/app/(tabs)/categories';
 import { setRecipeHeroImage } from '@/src/state/recipe-hero-image';
+import {
+  fetchSubscriptionInfo,
+  getLocalSubscriptionInfo,
+  recordLocalGeneration,
+  syncSubscription,
+  type SubscriptionInfo,
+} from '@/src/services/subscription';
 import type { AnalyzeRecipeRequest } from '@/src/types/recipe';
 
 type TrendingRecipe = {
@@ -53,6 +61,38 @@ export default function HomeScreen() {
   );
   const [busy, setBusy] = useState(false);
   const [analysisLabel, setAnalysisLabel] = useState('');
+  const [subInfo, setSubInfo] = useState<SubscriptionInfo | null>(null);
+
+  const loadSubInfo = useCallback(async () => {
+    try {
+      if (session?.user) {
+        const info = await syncSubscription();
+        setSubInfo(info);
+      } else {
+        const info = await getLocalSubscriptionInfo();
+        setSubInfo(info);
+      }
+    } catch {
+      try {
+        if (session?.user) {
+          const info = await fetchSubscriptionInfo();
+          setSubInfo(info);
+        } else {
+          const info = await getLocalSubscriptionInfo();
+          setSubInfo(info);
+        }
+      } catch {
+        const info = await getLocalSubscriptionInfo();
+        setSubInfo(info);
+      }
+    }
+  }, [session?.user]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadSubInfo();
+    }, [loadSubInfo]),
+  );
 
   const horizontalPadding = isSmall ? 14 : isLarge ? 24 : 20;
   const cardWidth = Math.min(260, Math.max(200, width * 0.58));
@@ -145,6 +185,13 @@ export default function HomeScreen() {
   const handleGetRecipe = async () => {
     if (busy || !canSubmit) return;
 
+    // Check subscription / free tier
+    const currentSub = subInfo ?? await getLocalSubscriptionInfo();
+    if (!currentSub.canGenerate) {
+      router.push('/paywall');
+      return;
+    }
+
     const name = dishName.trim();
     const details = recipeDetails.trim();
     const label =
@@ -171,7 +218,22 @@ export default function HomeScreen() {
         payload.imageMimeType = pendingImage.mimeType;
       }
 
-      const { recipe, meta } = await analyzeRecipe(payload);
+      let recipeData: Awaited<ReturnType<typeof analyzeRecipe>>;
+      try {
+        recipeData = await analyzeRecipe(payload);
+      } catch (analyzeErr) {
+        const msg = analyzeErr instanceof Error ? analyzeErr.message : '';
+        if (/subscription_required|402|free limit/i.test(msg)) {
+          router.push('/paywall');
+          return;
+        }
+        throw analyzeErr;
+      }
+      const { recipe, meta } = recipeData;
+      // Record usage locally
+      if (!session?.user) await recordLocalGeneration();
+      // Refresh sub info after generation
+      void loadSubInfo();
 
       const sourceBits = [name ? `"${name}"` : null, pendingImage ? 'photo' : null].filter(Boolean);
       const source = sourceBits.length ? sourceBits.join(' + ') : 'SnapDish';
@@ -237,6 +299,35 @@ export default function HomeScreen() {
             <Ionicons name="notifications-outline" size={20} color={colors.text} />
           </Pressable>
         </View>
+
+        {/* Trial / subscription banner */}
+        {subInfo && subInfo.status !== 'active' && subInfo.status !== 'trialing' ? (
+          <Pressable
+            style={[
+              styles.trialBanner,
+              subInfo.canGenerate ? styles.trialBannerFree : styles.trialBannerLocked,
+            ]}
+            onPress={() => router.push('/paywall')}>
+            <Ionicons
+              name={subInfo.canGenerate ? 'flash-outline' : 'lock-closed-outline'}
+              size={16}
+              color={subInfo.canGenerate ? '#B45309' : colors.danger}
+            />
+            <ThemedText style={[styles.trialBannerText, !subInfo.canGenerate && styles.trialBannerTextLocked]}>
+              {subInfo.canGenerate
+                ? subInfo.remaining === 1
+                  ? '1 free recipe left this week — tap to upgrade'
+                  : `${subInfo.remaining ?? subInfo.remaining} free ${(subInfo.remaining ?? 0) > 1 ? 'recipes' : 'recipe'} left — tap to upgrade`
+                : 'Free limit reached — subscribe for unlimited recipes'}
+            </ThemedText>
+            <Ionicons name="chevron-forward" size={14} color={subInfo.canGenerate ? '#B45309' : colors.danger} />
+          </Pressable>
+        ) : subInfo?.status === 'active' || subInfo?.status === 'trialing' ? (
+          <View style={styles.proBanner}>
+            <Ionicons name="sparkles" size={14} color={colors.text} />
+            <ThemedText style={styles.proBannerText}>SnapDish Pro — unlimited recipes</ThemedText>
+          </View>
+        ) : null}
 
         <View style={styles.heroCard}>
           <ThemedText style={styles.brandLine}>SnapDish</ThemedText>
@@ -336,11 +427,20 @@ export default function HomeScreen() {
           ) : null}
 
           <Pressable
-            style={[styles.primaryCta, isGenerateDisabled && styles.primaryCtaDisabled]}
+            style={[
+              styles.primaryCta,
+              isGenerateDisabled && styles.primaryCtaDisabled,
+              subInfo && !subInfo.canGenerate && styles.primaryCtaLocked,
+            ]}
             onPress={() => void handleGetRecipe()}
             disabled={isGenerateDisabled}>
             {busy ? (
               <ActivityIndicator color="#FFFFFF" />
+            ) : subInfo && !subInfo.canGenerate ? (
+              <>
+                <Ionicons name="lock-closed" size={18} color="#FFFFFF" />
+                <ThemedText style={styles.primaryCtaText}>Upgrade to generate</ThemedText>
+              </>
             ) : (
               <>
                 <Ionicons name="sparkles" size={18} color="#FFFFFF" />
@@ -612,9 +712,55 @@ const styles = StyleSheet.create({
   primaryCtaDisabled: {
     opacity: 0.45,
   },
+  primaryCtaLocked: {
+    backgroundColor: colors.textSecondary,
+  },
   primaryCtaText: {
     color: '#FFFFFF',
     fontSize: 16,
+    fontWeight: '700',
+  },
+  trialBanner: {
+    alignItems: 'center',
+    backgroundColor: '#FFF8EB',
+    borderColor: '#FDE68A',
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  trialBannerFree: {
+    backgroundColor: '#FFF8EB',
+    borderColor: '#FDE68A',
+  },
+  trialBannerLocked: {
+    backgroundColor: '#FEECEC',
+    borderColor: '#FECACA',
+  },
+  trialBannerText: {
+    color: '#92400E',
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  trialBannerTextLocked: {
+    color: colors.danger,
+  },
+  proBanner: {
+    alignItems: 'center',
+    backgroundColor: colors.accentLime,
+    borderRadius: radius.sm,
+    flexDirection: 'row',
+    gap: 6,
+    justifyContent: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  proBannerText: {
+    color: colors.text,
+    fontSize: 13,
     fontWeight: '700',
   },
   hintCard: {

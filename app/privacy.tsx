@@ -3,7 +3,7 @@ import { useRouter } from 'expo-router';
 import { Alert, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { clearGuestMode } from '@/app/_layout';
+import { clearGuestMode } from '@/src/lib/guest-mode';
 import { ThemedText } from '@/components/themed-text';
 import { authClient } from '@/src/lib/auth-client';
 import { clearPreAuthOnboarding } from '@/src/lib/pre-auth-onboarding';

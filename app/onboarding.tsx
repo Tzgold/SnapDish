@@ -4,7 +4,7 @@ import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
-import { setGuestMode } from '@/app/_layout';
+import { setGuestMode } from '@/src/lib/guest-mode';
 import { savePreAuthOnboarding, type DietOption, type GoalOption, type SkillOption, type TimeOption } from '@/src/lib/pre-auth-onboarding';
 import { colors, radius, shadow, spacing, typography } from '@/src/theme/snapdish';
 
