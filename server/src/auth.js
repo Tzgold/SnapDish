@@ -21,6 +21,9 @@ export const pool = databaseUrl
   ? new Pool({
       connectionString: databaseUrl,
       ssl: needsPgSsl ? { rejectUnauthorized: false } : undefined,
+      connectionTimeoutMillis: 15_000,
+      idleTimeoutMillis: 30_000,
+      max: 10,
     })
   : null;
 
@@ -52,7 +55,7 @@ export const auth = pool
             google: {
               clientId: process.env.GOOGLE_CLIENT_ID,
               clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-              prompt: 'select_account',
+              // No forced prompt — lets Google reuse Chrome session when already signed in.
             },
           }
         : undefined,
@@ -81,6 +84,9 @@ export const auth = pool
         ...devTrusted,
         ...(process.env.BETTER_AUTH_TRUSTED_ORIGINS?.split(',').map((s) => s.trim()).filter(Boolean) ?? []),
         ...(authBaseURL.startsWith('https://') ? [authBaseURL] : []),
+        ...(process.env.BETTER_AUTH_URL?.trim().startsWith('http')
+          ? [process.env.BETTER_AUTH_URL.trim().replace(/\/+$/, '')]
+          : []),
       ],
     })
   : null;
@@ -89,10 +95,13 @@ if (auth && process.env.GOOGLE_CLIENT_ID) {
   const isHttps = authBaseURL.startsWith('https://');
   if (!isHttps) {
     console.warn(
-      '[auth] Google OAuth is configured but base URL is not HTTPS:',
-      authBaseURL,
-      '\n  Google will reject sign-in until BETTER_AUTH_URL (or BETTER_AUTH_PUBLIC_URL) is a public https URL, e.g. ngrok.',
-      '\n  Add redirect URI in Google Cloud: https://YOUR-TUNNEL/api/auth/callback/google',
+      '[auth] Google OAuth is configured but no HTTPS public URL is set.',
+      '\n  Set BETTER_AUTH_PUBLIC_URL=https://YOUR-NGROK.ngrok-free.dev in server/.env',
+      '\n  and EXPO_PUBLIC_AUTH_URL to the same URL in snapdish-app/.env, then restart both.',
+      '\n  Google Cloud redirect URI: https://YOUR-NGROK.ngrok-free.dev/api/auth/callback/google',
     );
+  } else {
+    console.log('[auth] Google OAuth base URL:', authBaseURL);
+    console.log('[auth] Google redirect URI:', `${authBaseURL.replace(/\/+$/, '')}/api/auth/callback/google`);
   }
 }

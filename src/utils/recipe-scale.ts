@@ -69,6 +69,12 @@ export function scaleIngredientQuantity(quantity: string, factor: number): strin
   return rest ? `${scaled} ${rest}` : scaled;
 }
 
+/** Inverse of scaleIngredientQuantity — e.g. display servings → base recipe servings. */
+export function unscaleIngredientQuantity(quantity: string, factor: number): string {
+  if (!quantity.trim() || factor === 1 || factor <= 0) return quantity;
+  return scaleIngredientQuantity(quantity, 1 / factor);
+}
+
 export function scaleIngredients(
   ingredients: RecipeIngredient[],
   baseServings: number,
@@ -81,20 +87,30 @@ export function scaleIngredients(
   return ingredients.map((item) => ({
     ...item,
     quantity: scaleIngredientQuantity(item.quantity, factor),
+    calories: item.calories != null ? Math.round(item.calories * factor) : undefined,
+    proteinGrams: item.proteinGrams != null ? Math.round(item.proteinGrams * factor * 10) / 10 : undefined,
   }));
 }
 
 /**
  * Home-cooking times rarely change when you double servings (same pan, same oven).
- * Only ingredient amounts and total calories scale with servings.
+ * Ingredient amounts, per-ingredient calories, and total calories scale with servings.
  */
 export function scaleRecipeForServings(recipe: RecipeResult, targetServings: number): RecipeResult {
   const base = Math.max(1, recipe.servings);
   const target = Math.max(1, targetServings);
+  const factor = target / base;
   const calories =
     recipe.calories != null
-      ? Math.round(recipe.calories * (target / base))
+      ? Math.round(recipe.calories * factor)
       : undefined;
+  const macros = recipe.nutrition?.macros
+    ? {
+        proteinGrams: Math.round(recipe.nutrition.macros.proteinGrams * factor * 10) / 10,
+        fatGrams: Math.round(recipe.nutrition.macros.fatGrams * factor * 10) / 10,
+        carbsGrams: Math.round(recipe.nutrition.macros.carbsGrams * factor * 10) / 10,
+      }
+    : undefined;
   return {
     ...recipe,
     servings: target,
@@ -102,16 +118,26 @@ export function scaleRecipeForServings(recipe: RecipeResult, targetServings: num
     cookTimeMinutes: recipe.cookTimeMinutes,
     totalTimeMinutes: recipe.totalTimeMinutes,
     calories,
+    caloriesPerServing: calories != null ? Math.round(calories / target) : recipe.caloriesPerServing,
+    nutrition: recipe.nutrition && macros ? { ...recipe.nutrition, macros } : recipe.nutrition,
     ingredients: scaleIngredients(recipe.ingredients, base, target),
   };
 }
 
-/** Estimate calories for checked ingredients (not a simple count ratio). */
+/** Sum calories for checked ingredients (uses USDA per-ingredient data when available). */
 export function estimateSelectedCalories(
   ingredients: RecipeIngredient[],
   checkedNames: Set<string>,
   totalCalories: number
 ): number {
+  const checked = ingredients.filter((item) => checkedNames.has(item.name));
+  if (checked.length === 0) return 0;
+
+  const withCalories = checked.filter((item) => item.calories != null && item.calories > 0);
+  if (withCalories.length > 0) {
+    return withCalories.reduce((s, item) => s + (item.calories ?? 0), 0);
+  }
+
   if (totalCalories <= 0 || ingredients.length === 0) return 0;
   const weights = ingredients.map((item) => ({
     name: item.name,

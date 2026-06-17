@@ -11,7 +11,12 @@ const extraUrl =
 const rawBase =
   (typeof process !== 'undefined' && process.env?.EXPO_PUBLIC_API_URL) || extraUrl || 'http://localhost:4000';
 
+const rawAuthBase =
+  (typeof process !== 'undefined' && process.env?.EXPO_PUBLIC_AUTH_URL?.trim()) || rawBase;
+
 export const API_BASE_URL = rawBase.replace(/\/+$/, '');
+/** HTTPS URL for OAuth (Google). Falls back to API_BASE_URL when unset. */
+export const AUTH_BASE_URL = rawAuthBase.replace(/\/+$/, '');
 
 if (__DEV__) {
   if (/localhost|127\.0\.0\.1/i.test(API_BASE_URL)) {
@@ -20,6 +25,9 @@ if (__DEV__) {
     );
   } else {
     console.log('[SnapDish] API_BASE_URL =', API_BASE_URL);
+    if (AUTH_BASE_URL !== API_BASE_URL) {
+      console.log('[SnapDish] AUTH_BASE_URL =', AUTH_BASE_URL);
+    }
   }
 }
 

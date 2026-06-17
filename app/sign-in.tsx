@@ -8,7 +8,7 @@ import { ThemedText } from '@/components/themed-text';
 import { authClient } from '@/src/lib/auth-client';
 import { API_BASE_URL } from '@/src/config/api';
 import { clearGuestMode, setGuestMode } from '@/src/lib/guest-mode';
-import { signInWithGoogle } from '@/src/lib/social-auth';
+import { googleSignInReadiness, signInWithGoogle, usesNgrokAuth } from '@/src/lib/social-auth';
 import { syncOnboardingPreferences } from '@/src/services/preferences';
 import { colors, radius, shadow, spacing } from '@/src/theme/snapdish';
 
@@ -17,6 +17,8 @@ export default function SignInScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
+  const googleReady = googleSignInReadiness();
 
   const handleBack = () => {
     if (router.canGoBack()) {
@@ -82,7 +84,7 @@ export default function SignInScreen() {
   };
 
   const onContinueWithGoogle = async () => {
-    setBusy(true);
+    setGoogleBusy(true);
     try {
       const result = await signInWithGoogle();
       if (!result.ok) {
@@ -102,9 +104,11 @@ export default function SignInScreen() {
         err instanceof Error ? err.message : 'Could not continue with Google.',
       );
     } finally {
-      setBusy(false);
+      setGoogleBusy(false);
     }
   };
+
+  const authBusy = busy || googleBusy;
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
@@ -139,7 +143,7 @@ export default function SignInScreen() {
         <Pressable onPress={() => router.push('/forgot-password')} style={styles.forgotRow}>
           <ThemedText style={styles.forgotText}>Forgot password?</ThemedText>
         </Pressable>
-        <Pressable style={[styles.primaryBtn, busy && styles.primaryBtnDisabled]} onPress={() => void onSignIn()} disabled={busy}>
+        <Pressable style={[styles.primaryBtn, authBusy && styles.primaryBtnDisabled]} onPress={() => void onSignIn()} disabled={authBusy}>
           <ThemedText style={styles.primaryBtnText}>{busy ? 'Signing in…' : 'Continue'}</ThemedText>
         </Pressable>
         <View style={styles.dividerRow}>
@@ -147,10 +151,26 @@ export default function SignInScreen() {
           <ThemedText style={styles.dividerText}>or</ThemedText>
           <View style={styles.divider} />
         </View>
-        <Pressable style={[styles.googleBtn, busy && styles.primaryBtnDisabled]} onPress={() => void onContinueWithGoogle()} disabled={busy}>
-          <Ionicons name="logo-google" size={18} color={colors.text} />
-          <ThemedText style={styles.googleBtnText}>Continue with Google</ThemedText>
+        <Pressable
+          style={[styles.googleBtn, (authBusy || !googleReady.ready) && styles.primaryBtnDisabled]}
+          onPress={() => void onContinueWithGoogle()}
+          disabled={authBusy || !googleReady.ready}>
+          <View style={styles.googleIconWrap}>
+            <Ionicons name="logo-google" size={20} color="#4285F4" />
+          </View>
+          <ThemedText style={styles.googleBtnText}>
+            {googleBusy ? 'Opening Google sign-in…' : 'Continue with Google'}
+          </ThemedText>
         </Pressable>
+        {!googleReady.ready ? (
+          <ThemedText style={styles.googleHint}>
+            Google needs HTTPS (ngrok). Email sign-in works on Wi‑Fi now.
+          </ThemedText>
+        ) : usesNgrokAuth() ? (
+          <ThemedText style={styles.googleHint}>
+            Opens Google directly — pick your account and you&apos;re in.
+          </ThemedText>
+        ) : null}
         <Pressable onPress={() => router.push('/sign-up')} style={styles.linkRow}>
           <ThemedText style={styles.linkText}>New here? Create an account</ThemedText>
         </Pressable>
@@ -246,19 +266,33 @@ const styles = StyleSheet.create({
   },
   googleBtn: {
     alignItems: 'center',
-    backgroundColor: colors.surfaceMuted,
-    borderColor: colors.border,
+    backgroundColor: '#FFFFFF',
+    borderColor: '#DADCE0',
     borderRadius: radius.sm,
     borderWidth: 1,
     flexDirection: 'row',
-    gap: spacing.xs,
+    gap: spacing.sm,
     justifyContent: 'center',
+    minHeight: 52,
+    paddingHorizontal: spacing.md,
     paddingVertical: 14,
   },
+  googleIconWrap: {
+    alignItems: 'center',
+    height: 24,
+    justifyContent: 'center',
+    width: 24,
+  },
   googleBtnText: {
-    color: colors.text,
+    color: '#3C4043',
     fontSize: 16,
-    fontWeight: '700',
+    fontWeight: '600',
+  },
+  googleHint: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 18,
+    textAlign: 'center',
   },
   linkRow: {
     alignItems: 'center',

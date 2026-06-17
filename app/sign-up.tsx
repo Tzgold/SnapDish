@@ -5,9 +5,10 @@ import { Alert, Pressable, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
+import { API_BASE_URL } from '@/src/config/api';
 import { authClient } from '@/src/lib/auth-client';
 import { clearGuestMode } from '@/src/lib/guest-mode';
-import { signInWithGoogle } from '@/src/lib/social-auth';
+import { googleSignInReadiness, signInWithGoogle, usesNgrokAuth } from '@/src/lib/social-auth';
 import { syncOnboardingPreferences } from '@/src/services/preferences';
 import { colors, radius, shadow, spacing } from '@/src/theme/snapdish';
 
@@ -17,6 +18,8 @@ export default function SignUpScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
+  const googleReady = googleSignInReadiness();
 
   const handleBack = () => {
     if (router.canGoBack()) {
@@ -79,14 +82,22 @@ export default function SignUpScreen() {
       }
       router.replace('/(tabs)');
     } catch (err) {
-      Alert.alert('Sign up', err instanceof Error ? err.message : 'Could not create account.');
+      const msg = err instanceof Error ? err.message : 'Could not create account.';
+      if (/fetch|network|failed|timeout|request failed/i.test(msg)) {
+        Alert.alert(
+          'Cannot reach server',
+          `The app is trying ${API_BASE_URL}. Make sure the API server is running (npm run dev in server/), phone and PC are on the same Wi‑Fi, and both .env files use your current LAN IP (ipconfig → IPv4). Then restart Expo.`,
+        );
+      } else {
+        Alert.alert('Sign up', msg);
+      }
     } finally {
       setBusy(false);
     }
   };
 
   const onContinueWithGoogle = async () => {
-    setBusy(true);
+    setGoogleBusy(true);
     try {
       const result = await signInWithGoogle();
       if (!result.ok) {
@@ -103,9 +114,11 @@ export default function SignUpScreen() {
     } catch (err) {
       Alert.alert('Google sign in', err instanceof Error ? err.message : 'Could not continue with Google.');
     } finally {
-      setBusy(false);
+      setGoogleBusy(false);
     }
   };
+
+  const authBusy = busy || googleBusy;
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
@@ -145,7 +158,7 @@ export default function SignUpScreen() {
           value={password}
           onChangeText={setPassword}
         />
-        <Pressable style={[styles.primaryBtn, busy && styles.primaryBtnDisabled]} onPress={() => void onSignUp()} disabled={busy}>
+        <Pressable style={[styles.primaryBtn, authBusy && styles.primaryBtnDisabled]} onPress={() => void onSignUp()} disabled={authBusy}>
           <ThemedText style={styles.primaryBtnText}>{busy ? 'Creating…' : 'Sign up'}</ThemedText>
         </Pressable>
         <View style={styles.dividerRow}>
@@ -153,10 +166,26 @@ export default function SignUpScreen() {
           <ThemedText style={styles.dividerText}>or</ThemedText>
           <View style={styles.divider} />
         </View>
-        <Pressable style={[styles.googleBtn, busy && styles.primaryBtnDisabled]} onPress={() => void onContinueWithGoogle()} disabled={busy}>
-          <Ionicons name="logo-google" size={18} color={colors.text} />
-          <ThemedText style={styles.googleBtnText}>Continue with Google</ThemedText>
+        <Pressable
+          style={[styles.googleBtn, (authBusy || !googleReady.ready) && styles.primaryBtnDisabled]}
+          onPress={() => void onContinueWithGoogle()}
+          disabled={authBusy || !googleReady.ready}>
+          <View style={styles.googleIconWrap}>
+            <Ionicons name="logo-google" size={20} color="#4285F4" />
+          </View>
+          <ThemedText style={styles.googleBtnText}>
+            {googleBusy ? 'Opening Google sign-in…' : 'Continue with Google'}
+          </ThemedText>
         </Pressable>
+        {!googleReady.ready ? (
+          <ThemedText style={styles.googleHint}>
+            Google needs HTTPS (ngrok). Email sign-up works on Wi‑Fi now.
+          </ThemedText>
+        ) : usesNgrokAuth() ? (
+          <ThemedText style={styles.googleHint}>
+            Opens Google directly — pick your account and you&apos;re in.
+          </ThemedText>
+        ) : null}
         <Pressable onPress={() => router.push('/sign-in')} style={styles.linkRow}>
           <ThemedText style={styles.linkText}>Already have an account? Sign in</ThemedText>
         </Pressable>
@@ -247,19 +276,33 @@ const styles = StyleSheet.create({
   },
   googleBtn: {
     alignItems: 'center',
-    backgroundColor: colors.surfaceMuted,
-    borderColor: colors.border,
+    backgroundColor: '#FFFFFF',
+    borderColor: '#DADCE0',
     borderRadius: radius.sm,
     borderWidth: 1,
     flexDirection: 'row',
-    gap: spacing.xs,
+    gap: spacing.sm,
     justifyContent: 'center',
+    minHeight: 52,
+    paddingHorizontal: spacing.md,
     paddingVertical: 14,
   },
+  googleIconWrap: {
+    alignItems: 'center',
+    height: 24,
+    justifyContent: 'center',
+    width: 24,
+  },
   googleBtnText: {
-    color: colors.text,
+    color: '#3C4043',
     fontSize: 16,
-    fontWeight: '700',
+    fontWeight: '600',
+  },
+  googleHint: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 18,
+    textAlign: 'center',
   },
   linkRow: {
     alignItems: 'center',

@@ -2,9 +2,12 @@ import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native
 import * as Linking from 'expo-linking';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import * as WebBrowser from 'expo-web-browser';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import 'react-native-reanimated';
+
+WebBrowser.maybeCompleteAuthSession();
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { authClient } from '@/src/lib/auth-client';
@@ -26,7 +29,10 @@ function routeFromAuthDeepLink(url: string): string | null {
       return t ? `/reset-password?token=${encodeURIComponent(t)}` : '/reset-password';
     }
     if (segment === 'profile' || segment.startsWith('profile')) {
-      return '/profile';
+      return '/(tabs)/profile';
+    }
+    if (segment === '(tabs)' || segment.startsWith('(tabs)')) {
+      return '/(tabs)';
     }
     if (segment === 'subscription-success') {
       const sessionId = parsed.queryParams?.session_id;

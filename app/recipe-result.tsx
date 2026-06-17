@@ -7,17 +7,28 @@ import { Alert, Pressable, ScrollView, Share, StyleSheet, View, useWindowDimensi
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
+import { RecipeIngredientEditor } from '@/components/recipe-ingredient-editor';
 import { authClient } from '@/src/lib/auth-client';
 import { getMockRecipeResponse } from '@/src/services/analyze';
+import { recalculateNutrition } from '@/src/services/nutrition';
 import { apiFetch } from '@/src/services/http';
 import { bookmarkRecipe, saveRecipe, unbookmarkRecipe } from '@/src/services/recipes';
 import { isNotificationEnabled } from '@/src/services/notification-settings';
 import { getRecipeHeroImage } from '@/src/state/recipe-hero-image';
-import { RecipeResult } from '@/src/types/recipe';
+import { EditableIngredient, NutritionRecalcResponse, RecipeResult } from '@/src/types/recipe';
 import { colors, radius, shadow, spacing, typography } from '@/src/theme/snapdish';
 import {
+  activeIngredients,
+  newIngredientId,
+  pendingCount,
+  toEditableIngredients,
+} from '@/src/utils/recipe-ingredients';
+import {
   estimateSelectedCalories,
+  scaleIngredients,
+  scaleIngredientQuantity,
   scaleRecipeForServings,
+  unscaleIngredientQuantity,
 } from '@/src/utils/recipe-scale';
 
 type TabKey = 'ingredients' | 'directions';
@@ -65,10 +76,6 @@ function computeCookableSteps(r: RecipeResult, checked: Set<string>) {
   });
 }
 
-function ingredientKey(item: { name: string }) {
-  return item.name;
-}
-
 export default function RecipeResultScreen() {
   const router = useRouter();
   const { data: session } = authClient.useSession();
@@ -86,6 +93,9 @@ export default function RecipeResultScreen() {
   const [planReady, setPlanReady] = useState(false);
   const [remoteRecipeId, setRemoteRecipeId] = useState<string | null>(null);
   const [cloudBusy, setCloudBusy] = useState(false);
+  const [ingredientRows, setIngredientRows] = useState<EditableIngredient[]>([]);
+  const [liveNutrition, setLiveNutrition] = useState<NutritionRecalcResponse | null>(null);
+  const [nutritionBusy, setNutritionBusy] = useState(false);
 
   const baseRecipe = useMemo<RecipeResult>(() => {
     if (!params.recipe) return getMockRecipeResponse().recipe;
@@ -104,10 +114,47 @@ export default function RecipeResultScreen() {
     () => scaleRecipeForServings(baseRecipe, displayServings),
     [baseRecipe, displayServings]
   );
+
+  const displayRows = useMemo(() => {
+    if (displayServings === baseServings) return ingredientRows;
+    const factor = displayServings / baseServings;
+    return ingredientRows.map((row) => ({
+      ...row,
+      quantity: scaleIngredientQuantity(row.quantity, factor),
+      calories: row.calories != null ? Math.round(row.calories * factor) : undefined,
+    }));
+  }, [ingredientRows, displayServings, baseServings]);
+
+  const nutritionRows = useMemo(() => {
+    if (!liveNutrition?.ingredients?.length) return displayRows;
+    const byName = new Map(liveNutrition.ingredients.map((i) => [i.name.toLowerCase(), i]));
+    return displayRows.map((row) => {
+      const m = byName.get(row.name.toLowerCase());
+      if (!m) return row;
+      return { ...row, calories: m.calories, proteinGrams: m.proteinGrams, matchedFood: m.matchedFood };
+    });
+  }, [displayRows, liveNutrition]);
   const heroImageUri = getRecipeHeroImage() ?? HERO_IMAGE;
 
-  const totalCalories = recipe.calories ?? Math.round(420 * (displayServings / baseServings));
-  const caloriesPerServing = Math.round(totalCalories / displayServings);
+  const pendingIngredientCount = pendingCount(ingredientRows);
+  const totalCalories =
+    liveNutrition?.calories ??
+    recipe.calories ??
+    Math.round((recipe.caloriesPerServing ?? 420) * displayServings);
+  const caloriesPerServing =
+    liveNutrition?.caloriesPerServing ??
+    recipe.caloriesPerServing ??
+    (displayServings > 0 ? Math.round(totalCalories / displayServings) : totalCalories);
+  const displayNutrition = liveNutrition?.nutrition ?? recipe.nutrition;
+  const nutritionSource = displayNutrition?.source;
+  const nutritionLabel =
+    nutritionBusy
+      ? 'Updating…'
+      : nutritionSource === 'usda'
+        ? 'USDA verified'
+        : nutritionSource === 'hybrid'
+          ? 'USDA + estimate'
+          : 'Estimated';
 
   useEffect(() => {
     return () => {
@@ -152,19 +199,64 @@ export default function RecipeResultScreen() {
     setPlanReady(false);
     setRemoteRecipeId(null);
     setActiveTab('ingredients');
+    setIngredientRows(toEditableIngredients(baseRecipe.ingredients));
+    setLiveNutrition(null);
   }, [baseRecipe.recipeTitle]);
 
   useEffect(() => {
-    setPlanReady(false);
-  }, [displayServings]);
+    const active = activeIngredients(ingredientRows);
+    if (active.length === 0) {
+      setLiveNutrition(null);
+      return;
+    }
 
-  const selectedCount = checkedIngredients.size;
-  const totalIngredientCount = recipe.ingredients.length;
-  const selectedCalories = estimateSelectedCalories(recipe.ingredients, checkedIngredients, totalCalories);
-  const cookableSteps = useMemo(
-    () => computeCookableSteps(recipe, checkedIngredients),
-    [recipe, checkedIngredients]
+    const scaled = scaleIngredients(active, baseServings, displayServings);
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void (async () => {
+        setNutritionBusy(true);
+        try {
+          const result = await recalculateNutrition(scaled, displayServings);
+          if (cancelled || !result) return;
+          setLiveNutrition(result);
+        } finally {
+          if (!cancelled) setNutritionBusy(false);
+        }
+      })();
+    }, 450);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [ingredientRows, displayServings, baseServings]);
+
+  useEffect(() => {
+    setPlanReady(false);
+  }, [displayServings, ingredientRows]);
+
+  const confirmedRows = useMemo(
+    () => nutritionRows.filter((r) => r.userStatus === 'confirmed' || r.userStatus === 'added'),
+    [nutritionRows]
   );
+  const selectedCount = checkedIngredients.size;
+  const totalIngredientCount = confirmedRows.length;
+  const selectedCalories = useMemo(
+    () =>
+      estimateSelectedCalories(
+        confirmedRows.map(({ id, userStatus, ...rest }) => rest),
+        checkedIngredients,
+        totalCalories
+      ),
+    [confirmedRows, checkedIngredients, totalCalories]
+  );
+  const cookableSteps = useMemo(() => {
+    const planRecipe = {
+      ...recipe,
+      ingredients: confirmedRows.map(({ id, userStatus, ...rest }) => rest),
+    };
+    return computeCookableSteps(planRecipe, checkedIngredients);
+  }, [recipe, confirmedRows, checkedIngredients]);
 
   const toggleIngredient = (key: string) => {
     setCheckedIngredients((prev) => {
@@ -173,6 +265,67 @@ export default function RecipeResultScreen() {
       else next.add(key);
       return next;
     });
+  };
+
+  const updateIngredientRow = (id: string, patch: Partial<EditableIngredient>) => {
+    setIngredientRows((prev) => prev.map((row) => (row.id === id ? { ...row, ...patch } : row)));
+  };
+
+  const onConfirmIngredient = (id: string) => updateIngredientRow(id, { userStatus: 'confirmed' });
+  const onRejectIngredient = (id: string) => {
+    const row = ingredientRows.find((r) => r.id === id);
+    updateIngredientRow(id, { userStatus: 'rejected' });
+    if (row) {
+      setCheckedIngredients((prev) => {
+        const next = new Set(prev);
+        next.delete(row.name);
+        return next;
+      });
+    }
+  };
+  const onRemoveIngredient = (id: string) => onRejectIngredient(id);
+  const onAddIngredient = (name: string, quantity: string) => {
+    setIngredientRows((prev) => [
+      ...prev,
+      {
+        id: newIngredientId(name),
+        name,
+        quantity,
+        userStatus: 'added',
+        optional: false,
+      },
+    ]);
+  };
+  const onUpdateQuantity = (id: string, displayQuantity: string) => {
+    const trimmed = displayQuantity.trim();
+    if (!trimmed) return;
+    const factor = displayServings / baseServings;
+    const baseQuantity = unscaleIngredientQuantity(trimmed, factor);
+    updateIngredientRow(id, {
+      quantity: baseQuantity,
+      calories: undefined,
+      proteinGrams: undefined,
+      matchedFood: undefined,
+    });
+  };
+  const onUseAlternative = (id: string, alternativeName: string) => {
+    const row = ingredientRows.find((r) => r.id === id);
+    updateIngredientRow(id, {
+      name: alternativeName.trim(),
+      possibleAlternative: undefined,
+      userStatus: 'confirmed',
+      calories: undefined,
+      proteinGrams: undefined,
+      matchedFood: undefined,
+    });
+    if (row && checkedIngredients.has(row.name)) {
+      setCheckedIngredients((prev) => {
+        const next = new Set(prev);
+        next.delete(row.name);
+        next.add(alternativeName.trim());
+        return next;
+      });
+    }
   };
 
   const buildPlan = async () => {
@@ -356,6 +509,44 @@ export default function RecipeResultScreen() {
             />
           </View>
 
+          {displayNutrition?.macros ? (
+            <View style={styles.nutritionCard}>
+              <View style={styles.nutritionHeader}>
+                <Ionicons name="nutrition-outline" size={18} color={colors.brand} />
+                <ThemedText style={styles.nutritionTitle}>Nutrition · {nutritionLabel}</ThemedText>
+                {displayNutrition.coverage != null && displayNutrition.coverage >= 0.5 ? (
+                  <ThemedText style={styles.nutritionBadge}>
+                    {Math.round(displayNutrition.coverage * 100)}% matched
+                  </ThemedText>
+                ) : null}
+              </View>
+              <View style={styles.macroRow}>
+                <MacroPill label="Protein" value={`${displayNutrition.macros.proteinGrams}g`} />
+                <MacroPill label="Carbs" value={`${displayNutrition.macros.carbsGrams}g`} />
+                <MacroPill label="Fat" value={`${displayNutrition.macros.fatGrams}g`} />
+              </View>
+              {pendingIngredientCount > 0 ? (
+                <ThemedText style={styles.nutritionPendingHint}>
+                  Confirm {pendingIngredientCount} spotted ingredient{pendingIngredientCount > 1 ? 's' : ''} to finalize calories.
+                </ThemedText>
+              ) : null}
+              {displayNutrition.dataAttribution ? (
+                <ThemedText style={styles.nutritionAttribution}>Source: {displayNutrition.dataAttribution}</ThemedText>
+              ) : null}
+            </View>
+          ) : (
+            <View style={styles.nutritionCardLite}>
+              <ThemedText style={styles.nutritionAttribution}>
+                {totalCalories} kcal total · {caloriesPerServing} per serving ({nutritionLabel})
+              </ThemedText>
+              {pendingIngredientCount > 0 ? (
+                <ThemedText style={styles.nutritionPendingHint}>
+                  Confirm spotted ingredients below for accurate totals.
+                </ThemedText>
+              ) : null}
+            </View>
+          )}
+
           <View style={styles.servingsCard}>
             <View style={styles.servingsHeader}>
               <ThemedText lightColor={colors.text} darkColor={colors.text} style={styles.servingsLabel}>
@@ -381,7 +572,8 @@ export default function RecipeResultScreen() {
               </View>
             </View>
             <ThemedText lightColor={colors.textSecondary} darkColor={colors.textSecondary} style={styles.servingsHint}>
-              Ingredient amounts and calories scale with servings · prep & cook times stay the same · {totalCalories} kcal total
+              Ingredient amounts scale with servings · prep & cook times stay the same ·{' '}
+              {nutritionBusy ? 'Updating calories…' : `${totalCalories} kcal total`}
             </ThemedText>
           </View>
 
@@ -458,29 +650,18 @@ export default function RecipeResultScreen() {
           </View>
 
           {activeTab === 'ingredients' ? (
-            <View style={styles.listWrap}>
-              {recipe.ingredients.map((item) => {
-                const key = ingredientKey(item);
-                const checked = checkedIngredients.has(key);
-                return (
-                  <Pressable
-                    key={key}
-                    style={[styles.ingRow, checked && styles.ingRowChecked]}
-                    onPress={() => toggleIngredient(key)}>
-                    <View style={[styles.checkCircle, checked && styles.checkCircleOn]}>
-                      {checked ? <Ionicons name="checkmark" size={14} color="#FFF" /> : null}
-                    </View>
-                    <View style={styles.ingTextBlock}>
-                      <ThemedText style={[styles.ingName, checked && styles.ingNameChecked]}>{item.name}</ThemedText>
-                      {item.optional ? (
-                        <ThemedText style={styles.optionalTag}>optional</ThemedText>
-                      ) : null}
-                    </View>
-                    <ThemedText style={styles.ingQty}>{item.quantity}</ThemedText>
-                  </Pressable>
-                );
-              })}
-            </View>
+            <RecipeIngredientEditor
+              rows={nutritionRows}
+              checkedNames={checkedIngredients}
+              onTogglePantry={(_id, name) => toggleIngredient(name)}
+              onConfirm={onConfirmIngredient}
+              onReject={onRejectIngredient}
+              onRemove={onRemoveIngredient}
+              onAdd={onAddIngredient}
+              onUpdateQuantity={onUpdateQuantity}
+              onUseAlternative={onUseAlternative}
+              nutritionBusy={nutritionBusy}
+            />
           ) : (
             <View style={styles.directionWrap}>
               {!planReady ? (
@@ -527,6 +708,18 @@ export default function RecipeResultScreen() {
               ) : null}
             </View>
           )}
+
+          {recipe.visualAnalysis ? (
+            <View style={styles.analysisBlock}>
+              <ThemedText style={styles.analysisTitle}>What we see in your photo</ThemedText>
+              <ThemedText style={styles.analysisText}>{recipe.visualAnalysis}</ThemedText>
+              {recipe.confidenceScore < 0.65 ? (
+                <ThemedText style={styles.analysisHint}>
+                  Confidence {Math.round(recipe.confidenceScore * 100)}% — add a dish name or details for a sharper match.
+                </ThemedText>
+              ) : null}
+            </View>
+          ) : null}
 
           {recipe.notes && recipe.notes.length > 0 ? (
             <View style={styles.notesBlock}>
@@ -598,6 +791,15 @@ function StatBox({
       <Ionicons name={icon} size={16} color={iconColor} />
       <ThemedText style={styles.statValue}>{value}</ThemedText>
       <ThemedText style={styles.statLabel}>{label}</ThemedText>
+    </View>
+  );
+}
+
+function MacroPill({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.macroPill}>
+      <ThemedText style={styles.macroValue}>{value}</ThemedText>
+      <ThemedText style={styles.macroLabel}>{label}</ThemedText>
     </View>
   );
 }
@@ -932,10 +1134,90 @@ const styles = StyleSheet.create({
     color: colors.textTertiary,
     fontSize: 12,
   },
+  matchedFoodTag: {
+    color: colors.textTertiary,
+    fontSize: 11,
+    maxWidth: 180,
+  },
+  ingQtyBlock: {
+    alignItems: 'flex-end',
+    gap: 2,
+  },
   ingQty: {
     color: colors.text,
     fontSize: 14,
     fontWeight: '700',
+  },
+  ingCalories: {
+    color: colors.textSecondary,
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  nutritionCard: {
+    backgroundColor: colors.statCal,
+    borderRadius: radius.md,
+    gap: 10,
+    marginTop: 4,
+    padding: 14,
+  },
+  nutritionCardLite: {
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: radius.sm,
+    marginTop: 4,
+    padding: 10,
+  },
+  nutritionHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  nutritionTitle: {
+    color: colors.text,
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  nutritionBadge: {
+    backgroundColor: colors.brand,
+    borderRadius: 10,
+    color: '#FFF',
+    fontSize: 11,
+    fontWeight: '700',
+    overflow: 'hidden',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  macroRow: {
+    flexDirection: 'row',
+    gap: 8,
+    justifyContent: 'space-between',
+  },
+  macroPill: {
+    alignItems: 'center',
+    backgroundColor: colors.overlayLight,
+    borderRadius: radius.sm,
+    flex: 1,
+    paddingVertical: 8,
+  },
+  macroValue: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  macroLabel: {
+    color: colors.textSecondary,
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  nutritionAttribution: {
+    color: colors.textTertiary,
+    fontSize: 11,
+  },
+  nutritionPendingHint: {
+    color: colors.statRateIcon,
+    fontSize: 12,
+    fontWeight: '600',
+    lineHeight: 16,
   },
   directionWrap: {
     gap: 12,
@@ -1017,6 +1299,27 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     gap: 8,
     padding: 14,
+  },
+  analysisBlock: {
+    backgroundColor: colors.statPrep,
+    borderRadius: radius.md,
+    gap: 6,
+    padding: 14,
+  },
+  analysisTitle: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  analysisText: {
+    color: colors.textSecondary,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  analysisHint: {
+    color: colors.textTertiary,
+    fontSize: 12,
+    marginTop: 4,
   },
   notesTitle: {
     color: colors.text,

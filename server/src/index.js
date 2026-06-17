@@ -8,13 +8,24 @@ import { z } from 'zod';
 import { auth, pool } from './auth.js';
 import {
   AnalyzeBodySchema,
+  NutritionRecalcSchema,
   recipeFromDishName,
   recipeFromImage,
 } from './recipe-ai.js';
 import { createLlmClient } from './llm-client.js';
+import { enrichRecipeNutrition } from './nutrition-estimate.js';
+import { isUsdaConfigured } from './nutrition-usda.js';
 
 const app = express();
 const port = Number(process.env.PORT) || 4000;
+
+/** Keep API alive when Better Auth / DB hiccups — avoids full process crash on mobile "network failed". */
+process.on('unhandledRejection', (reason) => {
+  console.error('[snapdish] Unhandled rejection (server kept running):', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[snapdish] Uncaught exception (server kept running):', err);
+});
 
 const stripe = process.env.STRIPE_SECRET_KEY
   ? new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2025-04-30.basil' })
@@ -38,6 +49,13 @@ if (!llmApiKey) {
   );
 } else {
   console.log(`LLM provider: ${llmProvider} (primary: ${primaryModel})`);
+}
+if (isUsdaConfigured()) {
+  console.log('Nutrition: USDA FoodData Central (USDA_API_KEY set)');
+} else {
+  console.warn(
+    'Nutrition: using DEMO_KEY / local estimates. Set USDA_API_KEY in server/.env for accurate calories — free at https://fdc.nal.usda.gov/api-key-signup.html'
+  );
 }
 
 app.use(
@@ -703,6 +721,36 @@ app.post('/api/stripe/webhook',
 
 /* ── Recipe analysis ────────────────────────────────────────────────── */
 
+/** Recalculate USDA nutrition after user confirms/edits ingredients */
+app.post('/api/recipe/nutrition', async (req, res) => {
+  try {
+    const body = NutritionRecalcSchema.parse(req.body);
+    const enriched = await enrichRecipeNutrition({
+      recipeTitle: 'Custom',
+      servings: body.servings,
+      prepTimeMinutes: 0,
+      cookTimeMinutes: 0,
+      totalTimeMinutes: 0,
+      confidenceScore: 1,
+      ingredients: body.ingredients,
+      steps: [],
+    });
+    return res.json({
+      servings: enriched.servings,
+      calories: enriched.calories,
+      caloriesPerServing: enriched.caloriesPerServing,
+      nutrition: enriched.nutrition,
+      ingredients: enriched.ingredients,
+    });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: 'Invalid request', details: err.flatten() });
+    }
+    console.error('nutrition recalc:', err);
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Nutrition calculation failed' });
+  }
+});
+
 app.post('/api/analyze-recipe', async (req, res) => {
   try {
     if (!llmApiKey) {
@@ -787,6 +835,8 @@ app.post('/api/analyze-recipe', async (req, res) => {
         primaryModel,
         fallbackModel,
         preferencesApplied: Boolean(preferences),
+        nutritionSource: recipe.nutrition?.source ?? 'estimate',
+        nutritionCoverage: recipe.nutrition?.coverage,
       },
     });
   } catch (err) {

@@ -1,10 +1,48 @@
 import OpenAI from 'openai';
 import { z } from 'zod';
 
+import { enrichRecipeNutrition, reconcileNutrition } from './nutrition-estimate.js';
+
 const RecipeIngredientSchema = z.object({
   name: z.string(),
   quantity: z.string(),
   optional: z.boolean().optional(),
+  calories: z.number().optional(),
+  proteinGrams: z.number().optional(),
+  matchedFood: z.string().optional(),
+  /** 0–1 how confident the model is this ingredient is correct (required when detectedFromPhoto is true) */
+  confidence: z.number().min(0).max(1).optional(),
+  /** True if visibly identified from the food photo */
+  detectedFromPhoto: z.boolean().optional(),
+  /** When uncertain, alternate guess e.g. "could be turkey instead of chicken" */
+  possibleAlternative: z.string().optional(),
+});
+
+export const NutritionRecalcSchema = z.object({
+  servings: z.number().int().min(1).max(12).default(1),
+  ingredients: z.array(
+    z.object({
+      name: z.string().min(1),
+      quantity: z.string().min(1),
+      optional: z.boolean().optional(),
+    })
+  ),
+});
+
+const NutritionMetaSchema = z.object({
+  source: z.enum(['usda', 'hybrid', 'estimate']),
+  coverage: z.number().optional(),
+  matchedIngredients: z.number().optional(),
+  totalIngredients: z.number().optional(),
+  dataAttribution: z.string().optional(),
+  macros: z
+    .object({
+      proteinGrams: z.number(),
+      fatGrams: z.number(),
+      carbsGrams: z.number(),
+    })
+    .optional(),
+  breakdown: z.array(z.unknown()).optional(),
 });
 
 const RecipeStepSchema = z.object({
@@ -20,8 +58,11 @@ export const RecipeResultSchema = z.object({
   cookTimeMinutes: z.number(),
   totalTimeMinutes: z.number(),
   calories: z.number().optional(),
+  caloriesPerServing: z.number().optional(),
   rating: z.number().optional(),
   confidenceScore: z.number(),
+  visualAnalysis: z.string().optional(),
+  nutrition: NutritionMetaSchema.optional(),
   ingredients: z.array(RecipeIngredientSchema),
   steps: z.array(RecipeStepSchema),
   notes: z.array(z.string()).optional(),
@@ -42,45 +83,71 @@ export const AnalyzeBodySchema = z
     { message: 'Provide a dish name and/or a food photo (base64).' }
   );
 
-const JSON_ONLY_SYSTEM = `You are SnapDish, a cooking assistant. Always respond with a single valid JSON object only (no markdown fences, no extra text).
+const JSON_ONLY_SYSTEM = `You are SnapDish, a precise cooking assistant. Always respond with a single valid JSON object only (no markdown fences, no extra text).
 The JSON must match this shape:
 {
   "recipeTitle": string,
-  "servings": number,
-  "prepTimeMinutes": number,
-  "cookTimeMinutes": number,
-  "totalTimeMinutes": number,
-  "calories": number (total kcal for ALL servings listed, not per serving),
-  "rating": number between 1 and 5 (quality of the recipe as written),
-  "confidenceScore": number between 0 and 1 (how well this matches the user's request),
-  "ingredients": [{ "name": string, "quantity": string, "optional": boolean optional }],
+  "servings": number (integer 1–12),
+  "prepTimeMinutes": number (mise en place only — chopping, measuring, marinating before heat),
+  "cookTimeMinutes": number (active heat only — boil, sauté, bake, simmer; parallel tasks overlap, do not double-count),
+  "totalTimeMinutes": number (must equal prepTimeMinutes + cookTimeMinutes),
+  "calories": number optional (rough guess OK — server recalculates from USDA database),
+  "caloriesPerServing": number optional,
+  "rating": number between 1 and 5,
+  "confidenceScore": number between 0 and 1,
+  "visualAnalysis": string (photo path only: 2–4 sentences describing what you see — dish type, visible ingredients, colors, textures, portion size),
+  "ingredients": [{
+    "name": string,
+    "quantity": string with weight/volume (e.g. "200 g", "2 tbsp"),
+    "optional": boolean optional,
+    "confidence": number 0–1 (required for photo-detected items),
+    "detectedFromPhoto": boolean (true if visibly seen in photo, false if recipe-inferred),
+    "possibleAlternative": string optional (if unsure: "may be X instead")
+  }],
   "steps": [{ "order": number starting at 1, "instruction": string, "durationMinutes": number optional }],
-  "notes": string[] (tips, substitutions, or caveats)
+  "notes": string[] (tips, substitutions, caveats; include calorie/time assumptions when relevant)
 }
-Ensure totalTimeMinutes equals prepTimeMinutes + cookTimeMinutes (not a separate estimate).
-Ingredient quantities must match the servings count (e.g. 4 servings → amounts for 4 people).
-List realistic prepTimeMinutes (chopping, marinating) and cookTimeMinutes (active heat: boil, sauté, bake, simmer) separately.
-Times should match real techniques — e.g. boiling pasta is ~8–12 min whether servings are 2 or 4; do not inflate cook time just because servings are higher.
-Steps must be ordered, practical, and grouped logically: prep/mise steps first, then cook steps, then finish/serve. Use clear action verbs. durationMinutes on cook steps should sum roughly to cookTimeMinutes when possible.
 
-When the user provides a written description, treat it as a hard constraint unless it is impossible — match their ingredients, method, spice level, texture goals, and substitutions exactly when stated.
+CALORIE / NUTRITION:
+- Focus on accurate ingredient names and measurable quantities (grams, ml, cups, tbsp).
+- The server calculates calories from the USDA FoodData Central database — you do not need precise calorie math.
+- Still provide realistic calories if you can, but ingredient quantities matter more than calorie totals.
 
-When a food photo is provided, inspect it carefully before writing the recipe (see image analysis rules in the user message).`;
+TIME METHODOLOGY:
+- prepTimeMinutes: washing, chopping, mixing before any heat.
+- cookTimeMinutes: longest active cooking window (simmering 20 min while oven bakes 25 min → cookTimeMinutes ≈ 25, not 45).
+- Put durationMinutes on cook steps; their sum should be within ~20% of cookTimeMinutes.
+- Do NOT inflate cook time when servings increase (same pot, same oven).
 
-const IMAGE_ANALYSIS_RULES = `PHOTO ANALYSIS (do this mentally before writing JSON):
-Study the image in detail — do not guess from the dish name alone.
-- Dish type: pasta, rice, soup, salad, sandwich, baked good, curry, stir-fry, etc.
-- Visible ingredients: every protein, vegetable, herb, cheese, sauce, grain, or garnish you can identify (e.g. rigatoni vs penne, peas, tomato chunks, cream vs tomato sauce, melted cheese, char marks).
-- Colors & texture: glossy sauce, crispy skin, golden crust, green herbs, oil sheen, broth clarity.
-- Cooking cues: grilled, fried, baked, raw/fresh, one-pot, plated restaurant-style.
-- Portion context: single bowl, family tray, leftovers — infer sensible servings.
-- Confidence: if something is unclear (blurry, cropped, ambiguous), lower confidenceScore and say what you could not verify in notes.
+SERVINGS METHODOLOGY:
+- Single restaurant bowl/plate ≈ 1 serving. Family casserole/sheet pan ≈ 4–6. Large soup pot ≈ 6–8.
+- Ingredient quantities must match the servings count exactly.
+
+When the user provides a written description, treat it as a hard constraint unless unsafe — match ingredients, method, and substitutions exactly.
+
+When a food photo is provided, inspect it carefully before writing JSON (see image analysis rules).`;
+
+const IMAGE_ANALYSIS_RULES = `PHOTO ANALYSIS (mandatory — write visualAnalysis field from this):
+Study the image in detail before guessing from the dish name alone.
+- Dish type & cuisine: pasta, rice bowl, soup, salad, curry, stir-fry, baked good, sandwich, etc.
+- Visible ingredients: every protein, vegetable, herb, cheese, sauce, grain, garnish (e.g. rigatoni vs penne, peas, tomato chunks, cream vs tomato sauce, char marks).
+- Colors & texture: glossy sauce, crispy skin, golden crust, fresh herbs, oil sheen, broth clarity.
+- Cooking method cues: grilled, fried, baked, braised, raw/fresh, one-pot, restaurant plating.
+- Portion & vessel: single bowl, dinner plate, sheet pan, large pot — infer realistic servings (1 for a single plated meal, 4–6 for a tray/pot).
+- Confidence: if blurry, cropped, or ambiguous, lower confidenceScore and explain uncertainty in notes.
 
 RECIPE RULES AFTER ANALYSIS:
-- Ingredient list should reflect what is visible OR what the user asked for in their description; prefer the description when they specify swaps or "use X instead".
-- recipeTitle should match what is actually in the photo when a photo exists.
-- Steps should describe how to reach the look and components in the image (sauce consistency, doneness, assembly).
-- First item in notes[]: one sentence — "From your photo I see: …" plus how you applied their description (if any).`;
+- visualAnalysis: describe exactly what you see (2–4 sentences).
+- For EVERY ingredient visible or strongly implied in the photo: set detectedFromPhoto: true and an honest confidence (0.55–1.0).
+  - Clearly visible (e.g. green peas, melted cheese) → confidence 0.85–0.98
+  - Partly hidden or ambiguous (e.g. white sauce vs cheese) → confidence 0.55–0.75, add possibleAlternative
+  - Do NOT list ingredients you cannot see at all with detectedFromPhoto: true
+- Ingredients only needed for the recipe but NOT visible (e.g. salt, oil used in cooking): detectedFromPhoto: false, confidence 0.95
+- Ingredient list reflects visible components AND user description (description wins for substitutions).
+- recipeTitle matches the photo when a photo exists.
+- Steps explain how to achieve the look in the image (sauce consistency, doneness, assembly).
+- First note: brief summary — "From your photo: …" plus how you applied their description.
+- List any possibly missing visible items in notes[] as "You may also have: …" so the user can add them.`;
 
 const DESCRIPTION_RULES = `USER DESCRIPTION (highest priority after safety):
 Read every word of the user's description. Extract and obey:
@@ -107,11 +174,38 @@ function parseRecipeJson(raw) {
 function normalizeRecipe(recipe) {
   const steps = [...recipe.steps].sort((a, b) => a.order - b.order);
   const renumbered = steps.map((s, i) => ({ ...s, order: i + 1 }));
-  return {
+
+  let prep = Math.max(0, Math.round(recipe.prepTimeMinutes));
+  let cook = Math.max(0, Math.round(recipe.cookTimeMinutes));
+
+  const cookStepMinutes = renumbered
+    .filter((s) => s.durationMinutes != null && s.durationMinutes > 0)
+    .reduce((sum, s) => sum + s.durationMinutes, 0);
+
+  if (cookStepMinutes > 0 && cook > 0) {
+    const ratio = cookStepMinutes / cook;
+    if (ratio > 1.35 || ratio < 0.55) {
+      cook = Math.round((cook + cookStepMinutes) / 2);
+    }
+  }
+
+  prep = Math.min(180, prep);
+  cook = Math.min(480, cook);
+
+  const reconciled = reconcileNutrition({
     ...recipe,
     steps: renumbered,
-    totalTimeMinutes: recipe.prepTimeMinutes + recipe.cookTimeMinutes,
-  };
+    prepTimeMinutes: prep,
+    cookTimeMinutes: cook,
+    totalTimeMinutes: prep + cook,
+  });
+
+  return reconciled;
+}
+
+async function finalizeRecipe(recipe) {
+  const normalized = normalizeRecipe(recipe);
+  return enrichRecipeNutrition(normalized);
 }
 
 /**
@@ -208,14 +302,14 @@ async function withPrimaryFallback(openai, primaryModel, fallbackModel, temperat
 
   try {
     const raw = await tryModel(primaryModel);
-    return normalizeRecipe(parseRecipeJson(raw));
+    return finalizeRecipe(parseRecipeJson(raw));
   } catch (primaryErr) {
     if (!fallbackModel || fallbackModel === primaryModel) {
       throw primaryErr;
     }
     try {
       const raw = await tryModel(fallbackModel);
-      return normalizeRecipe(parseRecipeJson(raw));
+      return finalizeRecipe(parseRecipeJson(raw));
     } catch (fallbackErr) {
       const p = primaryErr instanceof Error ? primaryErr.message : String(primaryErr);
       const f = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
@@ -269,9 +363,11 @@ export async function recipeFromImage(
     hasImage: true,
   });
 
-  const userText = `${context}${IMAGE_ANALYSIS_RULES}
+  const userText = `${context}${DESCRIPTION_RULES}
 
-Produce a complete recipe JSON: title, servings, realistic prep/cook/total times, estimated calories (total for all servings), ingredients with quantities, and numbered steps grouped prep → cook → serve. Add durationMinutes on cook steps when helpful. Match the photo and user description as closely as possible.
+${IMAGE_ANALYSIS_RULES}
+
+Produce a complete recipe JSON: title, servings, realistic prep/cook/total times, calories + caloriesPerServing (total for all servings), visualAnalysis, ingredients with measurable quantities, and numbered steps grouped prep → cook → serve. Add durationMinutes on cook steps. Match the photo and user description as closely as possible.
 ${prefBlock}
 
 Return JSON only.`;

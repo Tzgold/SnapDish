@@ -1,13 +1,40 @@
+export type IngredientUserStatus = 'pending' | 'confirmed' | 'rejected' | 'added';
+
 export type RecipeIngredient = {
   name: string;
   quantity: string;
   optional?: boolean;
+  calories?: number;
+  proteinGrams?: number;
+  matchedFood?: string;
+  /** 0–1 model confidence (photo-detected ingredients) */
+  confidence?: number;
+  detectedFromPhoto?: boolean;
+  possibleAlternative?: string;
+};
+
+export type EditableIngredient = RecipeIngredient & {
+  id: string;
+  userStatus: IngredientUserStatus;
 };
 
 export type RecipeStep = {
   order: number;
   instruction: string;
   durationMinutes?: number;
+};
+
+export type RecipeNutrition = {
+  source: 'usda' | 'hybrid' | 'estimate';
+  coverage?: number;
+  matchedIngredients?: number;
+  totalIngredients?: number;
+  dataAttribution?: string;
+  macros?: {
+    proteinGrams: number;
+    fatGrams: number;
+    carbsGrams: number;
+  };
 };
 
 export type RecipeResult = {
@@ -17,19 +44,27 @@ export type RecipeResult = {
   cookTimeMinutes: number;
   totalTimeMinutes: number;
   calories?: number;
+  caloriesPerServing?: number;
   rating?: number;
   ingredients: RecipeIngredient[];
   steps: RecipeStep[];
   confidenceScore: number;
+  visualAnalysis?: string;
+  nutrition?: RecipeNutrition;
   notes?: string[];
 };
 
-/** Send a dish name, a food photo (base64), or both. At least one must be set. */
+export type NutritionRecalcResponse = {
+  servings: number;
+  calories?: number;
+  caloriesPerServing?: number;
+  nutrition?: RecipeNutrition;
+  ingredients: RecipeIngredient[];
+};
+
 export type AnalyzeRecipeRequest = {
   dishName?: string;
-  /** Extra context: ingredients on hand, spice level, what they see in the photo, etc. */
   recipeDetails?: string;
-  /** How the user wants to cook (e.g. air fryer, one-pan, meal prep). */
   cookingStyle?: string;
   imageBase64?: string;
   imageMimeType?: string;
@@ -41,5 +76,7 @@ export type AnalyzeRecipeResponse = {
     primaryModel?: string;
     fallbackModel?: string;
     preferencesApplied?: boolean;
+    nutritionSource?: 'usda' | 'hybrid' | 'estimate';
+    nutritionCoverage?: number;
   };
 };
